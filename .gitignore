@@ -24,3 +24,6 @@ rustc-ice-*.txt
 #.idea/
 
 chapters/
+
+# Local experiment measurements
+experiments/*-results.json

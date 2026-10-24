@@ -10,8 +10,28 @@ use crate::{
     filter::{Candidate, SearchStats},
     grouping::{self, Coefficients, Strategy},
 };
+use hashbrown::HashMap;
+use serde::Serialize;
 use std::num::NonZeroUsize;
 
+/// Verification strategy; filtering and candidate order are unchanged.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Verification {
+    #[default]
+    Exhaustive,
+    Hash,
+}
+impl std::str::FromStr for Verification {
+    type Err = &'static str;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "exhaustive" => Ok(Self::Exhaustive),
+            "hash" => Ok(Self::Hash),
+            _ => Err("verification must be exhaustive or hash"),
+        }
+    }
+}
 /// Number of input bytes combined before shifting the state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatchSize {
@@ -64,6 +84,8 @@ impl std::str::FromStr for SuperCharacterBits {
 
 #[derive(Debug)]
 pub struct FdrFilter {
+    verification: Verification,
+    verification_tables: Vec<HashMap<Vec<u8>, Vec<usize>>>,
     patterns: Patterns,
     buckets: Vec<Vec<usize>>,
     effective_lengths: Vec<usize>,
@@ -117,6 +139,8 @@ impl FdrFilter {
             }
         }
         Self {
+            verification: Verification::Exhaustive,
+            verification_tables: Vec::new(),
             patterns,
             buckets,
             effective_lengths,
@@ -127,6 +151,36 @@ impl FdrFilter {
             width,
             batch_size: BatchSize::One,
         }
+    }
+    /// Index each bucket's common suffix. Equal suffixes retain all pattern IDs
+    /// and are always followed by comparison of the entire original pattern.
+    pub fn with_verification(mut self, verification: Verification) -> Self {
+        self.verification = verification;
+        self.verification_tables.clear();
+        if verification == Verification::Hash {
+            for (b, bucket) in self.buckets.iter().enumerate() {
+                let mut table: HashMap<Vec<u8>, Vec<usize>> = HashMap::new();
+                for &id in bucket {
+                    let pattern = &self.patterns.as_slice()[id];
+                    let suffix = pattern[pattern.len() - self.effective_lengths[b]..].to_vec();
+                    table.entry(suffix).or_default().push(id);
+                }
+                self.verification_tables.push(table);
+            }
+        }
+        self
+    }
+    pub fn verification(&self) -> Verification {
+        self.verification
+    }
+    /// Logical payload: suffix bytes and usize IDs. Excludes HashMap capacity,
+    /// control bytes, Vec headers/capacity, allocator overhead and patterns.
+    pub fn verification_table_bytes(&self) -> usize {
+        self.verification_tables
+            .iter()
+            .flat_map(|table| table.iter())
+            .map(|(suffix, ids)| suffix.len() + ids.len() * size_of::<usize>())
+            .sum()
     }
     /// Build correlated byte-pair masks, retaining byte masks for end of input.
     /// The final pattern byte accepts every possible next-byte value.
@@ -314,7 +368,20 @@ impl FdrFilter {
             if STATS {
                 stats.candidate_count += 1;
             }
-            for &id in &self.buckets[candidate.bucket_id] {
+            let ids = match self.verification {
+                Verification::Exhaustive => &self.buckets[candidate.bucket_id][..],
+                Verification::Hash => {
+                    let length = self.effective_lengths[candidate.bucket_id];
+                    // Initial state guarantees end >= common suffix length.
+                    if STATS {
+                        stats.hash_lookups += 1;
+                    }
+                    self.verification_tables[candidate.bucket_id]
+                        .get(&input[candidate.end - length..candidate.end])
+                        .map_or(&[][..], Vec::as_slice)
+                }
+            };
+            for &id in ids {
                 let pattern = &self.patterns.as_slice()[id];
                 if pattern.len() > candidate.end {
                     continue;
@@ -349,5 +416,37 @@ impl FdrFilter {
     }
     pub fn statistics(&self, input: &[u8]) -> SearchStats {
         self.search::<true>(input, |_| {})
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn shared_suffix_keeps_duplicate_ids_and_requires_full_comparison() {
+        let patterns =
+            Patterns::new(vec![b"xab".to_vec(), b"yab".to_vec(), b"xab".to_vec()]).unwrap();
+        let filter = FdrFilter::new(
+            patterns,
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(2).unwrap(),
+            Strategy::Balanced,
+            Coefficients::default(),
+        )
+        .with_verification(Verification::Hash);
+        assert_eq!(
+            filter.verification_tables[0].get(b"ab".as_slice()).unwrap(),
+            &[0, 1, 2]
+        );
+        let found = filter.find_all(b"xabzab");
+        assert_eq!(
+            found.iter().map(|m| m.pattern_id).collect::<Vec<_>>(),
+            vec![0, 2]
+        );
+        let stats = filter.statistics(b"xabzab");
+        assert_eq!(stats.candidate_count, 2);
+        assert_eq!(stats.hash_lookups, 2);
+        assert_eq!(stats.full_comparisons, 6);
+        assert_eq!(stats.false_positive_candidates, 1);
     }
 }
