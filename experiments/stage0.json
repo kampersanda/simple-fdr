@@ -1,0 +1,14 @@
+{
+  "seed": 42,
+  "input_len": 128,
+  "pattern_count": 4,
+  "min_pattern_len": 2,
+  "max_pattern_len": 5,
+  "alphabet": [97, 98, 99, 100],
+  "insertions": [
+    { "pattern_id": 0, "start": 0 },
+    { "pattern_id": 1, "start": 32 },
+    { "pattern_id": 2, "start": 64 },
+    { "pattern_id": 3, "start": 96 }
+  ]
+}
