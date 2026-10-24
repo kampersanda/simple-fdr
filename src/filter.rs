@@ -8,7 +8,11 @@ use std::num::NonZeroUsize;
 
 use serde::Serialize;
 
-use crate::{Match, Patterns, multiple_shift_or::MultipleShiftOr};
+use crate::{
+    Match, Patterns,
+    grouping::{self, Coefficients, Strategy},
+    multiple_shift_or::MultipleShiftOr,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Candidate {
@@ -35,22 +39,18 @@ pub struct Filter {
 impl Filter {
     /// Groups consecutive IDs into at most `bucket_count` balanced buckets.
     /// `None` keeps whole patterns; `Some(length)` filters each pattern's suffix
-    /// independently. This is not the common-suffix-length model of stage 4.
+    /// independently, unlike the common suffix length of `FdrFilter`.
     pub fn new(
         patterns: Patterns,
         bucket_count: NonZeroUsize,
         filter_length: Option<NonZeroUsize>,
     ) -> Self {
-        let count = patterns.as_slice().len();
-        let bucket_count = bucket_count.get().min(count);
-        let mut buckets = vec![Vec::new(); bucket_count];
-        // Earlier buckets receive one extra pattern when division is uneven.
-        let mut next_id = 0;
-        for (bucket_id, bucket) in buckets.iter_mut().enumerate() {
-            let size = count / bucket_count + usize::from(bucket_id < count % bucket_count);
-            bucket.extend(next_id..next_id + size);
-            next_id += size;
-        }
+        let buckets = grouping::partition(
+            &patterns,
+            bucket_count,
+            Strategy::Balanced,
+            Coefficients::default(),
+        );
         let mut classes = Vec::new();
         let mut accepting_lengths = Vec::new();
         for bucket in &buckets {
@@ -114,31 +114,15 @@ impl Filter {
     ) -> SearchStats {
         let mut stats = SearchStats::default();
         self.scan_candidates(input, |candidate| {
-            let mut matched = false;
-            if STATS {
-                stats.candidate_count += 1;
-            }
-            for &id in &self.buckets[candidate.bucket_id] {
-                let pattern = &self.patterns.as_slice()[id];
-                if pattern.len() > candidate.end {
-                    continue;
-                }
-                if STATS {
-                    stats.full_comparisons += 1;
-                }
-                let start = candidate.end - pattern.len();
-                if input[start..candidate.end] == pattern[..] {
-                    matched = true;
-                    report(Match {
-                        pattern_id: id,
-                        start,
-                        end: candidate.end,
-                    });
-                }
-            }
-            if STATS && !matched {
-                stats.false_positive_candidates += 1;
-            }
+            let ids = &self.buckets[candidate.bucket_id];
+            verify::<STATS>(
+                &self.patterns,
+                ids,
+                input,
+                candidate.end,
+                &mut stats,
+                &mut report,
+            );
         });
         stats
     }
@@ -158,5 +142,38 @@ impl Filter {
     /// Comparisons skipped because the pattern exceeds `end` are not counted.
     pub fn statistics(&self, input: &[u8]) -> SearchStats {
         self.search::<true>(input, |_| {})
+    }
+}
+
+/// Compares whole patterns ending at `end`, skipping those longer than `end`.
+pub(crate) fn verify<const STATS: bool>(
+    patterns: &Patterns,
+    ids: &[usize],
+    input: &[u8],
+    end: usize,
+    stats: &mut SearchStats,
+    mut report: impl FnMut(Match),
+) {
+    let mut matched = false;
+    for &id in ids {
+        let pattern = &patterns.as_slice()[id];
+        let Some(start) = end.checked_sub(pattern.len()) else {
+            continue;
+        };
+        if STATS {
+            stats.full_comparisons += 1;
+        }
+        if input[start..end] == pattern[..] {
+            matched = true;
+            report(Match {
+                pattern_id: id,
+                start,
+                end,
+            });
+        }
+    }
+    if STATS {
+        stats.candidate_count += 1;
+        stats.false_positive_candidates += usize::from(!matched);
     }
 }

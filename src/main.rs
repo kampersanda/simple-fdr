@@ -43,21 +43,21 @@ enum Command {
         /// Maximum suffix length (truncation and FDR modes).
         #[arg(long, default_value = "2")]
         filter_length: NonZeroUsize,
-        /// Input bytes per FDR batch (1, 2, 4 or 8); sequential always uses 1.
-        #[arg(long, default_value = "8")]
+        /// Input bytes per FDR batch; fdr-sequential always uses 1.
+        #[arg(long, value_enum, default_value = "8")]
         batch_size: BatchSize,
-        /// Low bits of the next byte included in FDR masks (0, 4 or 8).
-        #[arg(long, default_value = "0")]
+        /// Low bits of the next byte included in FDR masks.
+        #[arg(long, value_enum, default_value = "0")]
         super_character_bits: SuperCharacterBits,
-        /// FDR mask backend: integer, neon or sse2.
-        #[arg(long, default_value = "integer")]
+        /// FDR mask accumulation backend.
+        #[arg(long, value_enum, default_value = "integer")]
         backend: Backend,
-        /// Candidate verifier for FDR modes (exhaustive or hash).
-        #[arg(long, default_value = "exhaustive")]
+        /// Candidate verifier for FDR modes.
+        #[arg(long, value_enum, default_value = "exhaustive")]
         verification: Verification,
         /// Bucket partition for the FDR filter.
-        #[arg(long, value_enum, default_value_t = GroupingStrategy::DynamicProgramming)]
-        grouping_strategy: GroupingStrategy,
+        #[arg(long, value_enum, default_value = "dynamic-programming")]
+        grouping_strategy: Strategy,
         #[arg(long, default_value = "1.05")]
         alpha: f64,
         #[arg(long, default_value = "3")]
@@ -65,7 +65,8 @@ enum Command {
     },
 }
 
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
 enum Algorithm {
     Naive,
     MultipleShiftOr,
@@ -74,23 +75,6 @@ enum Algorithm {
     GroupingTruncation,
     FdrSequential,
     FdrBatched,
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-enum GroupingStrategy {
-    Balanced,
-    LengthSorted,
-    DynamicProgramming,
-}
-
-impl From<GroupingStrategy> for Strategy {
-    fn from(value: GroupingStrategy) -> Self {
-        match value {
-            GroupingStrategy::Balanced => Self::Balanced,
-            GroupingStrategy::LengthSorted => Self::LengthSorted,
-            GroupingStrategy::DynamicProgramming => Self::DynamicProgramming,
-        }
-    }
 }
 
 #[derive(Args)]
@@ -109,7 +93,7 @@ struct ResultFile<'a> {
     architecture: &'static str,
     os: &'static str,
     debug_assertions: bool,
-    algorithm: &'static str,
+    algorithm: Algorithm,
     #[serde(skip_serializing_if = "Option::is_none")]
     state_width_bits: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -175,70 +159,62 @@ fn main() -> Result<()> {
         } => {
             let coefficients = Coefficients::new(alpha, beta)?;
             let dataset = load_dataset(&files.config)?;
+            let input = &dataset.input;
             // Generation and output serialization are excluded. This single sample
             // includes collecting matches; it is not a benchmark with repetitions.
             let started = Instant::now();
             let patterns = Patterns::new(dataset.patterns)?;
             let max_pattern_len = patterns.as_slice().iter().map(Vec::len).max().unwrap_or(0);
+            let (mut construction_ns, mut search_ns) = (0, 0);
+            let mut timed = |find_all: &dyn Fn() -> Vec<Match>| {
+                construction_ns = started.elapsed().as_nanos();
+                let search = Instant::now();
+                let matches = find_all();
+                search_ns = search.elapsed().as_nanos();
+                matches
+            };
             let mut filter_result = None;
             let mut fdr_filter_result = None;
-            let (construction_ns, search_ns, mut matches, name, width, words) = match algorithm {
+            let (mut matches, state) = match algorithm {
                 Algorithm::Naive => {
                     let matcher = Naive::new(patterns);
-                    let construction_ns = started.elapsed().as_nanos();
-                    let search = Instant::now();
-                    let matches = matcher.find_all(&dataset.input);
-                    (
-                        construction_ns,
-                        search.elapsed().as_nanos(),
-                        matches,
-                        "naive",
-                        None,
-                        None,
-                    )
+                    (timed(&|| matcher.find_all(input)), None)
+                }
+                Algorithm::MultipleShiftOr => {
+                    let matcher = MultipleShiftOr::new(patterns);
+                    let matches = timed(&|| matcher.find_all(input));
+                    (matches, Some((matcher.state_width(), matcher.word_count())))
                 }
                 Algorithm::Grouping | Algorithm::Truncation | Algorithm::GroupingTruncation => {
-                    let (name, buckets, length) = match algorithm {
-                        Algorithm::Grouping => ("grouping", bucket_count, None),
+                    let (buckets, length) = match algorithm {
+                        Algorithm::Grouping => (bucket_count, None),
                         Algorithm::Truncation => (
-                            "truncation",
                             NonZeroUsize::new(patterns.as_slice().len().max(1)).unwrap(),
                             Some(filter_length),
                         ),
-                        _ => ("grouping-truncation", bucket_count, Some(filter_length)),
+                        _ => (bucket_count, Some(filter_length)),
                     };
                     let matcher = Filter::new(patterns, buckets, length);
-                    let construction_ns = started.elapsed().as_nanos();
-                    let search = Instant::now();
-                    let matches = matcher.find_all(&dataset.input);
-                    let search_ns = search.elapsed().as_nanos();
+                    let matches = timed(&|| matcher.find_all(input));
                     filter_result = Some(FilterResult {
                         requested_bucket_count: buckets.get(),
                         filter_length: length.map(NonZeroUsize::get),
                         buckets: matcher.buckets().to_vec(),
                         accepting_lengths: matcher.accepting_lengths().to_vec(),
-                        statistics: matcher.statistics(&dataset.input),
+                        statistics: matcher.statistics(input),
                     });
-                    (
-                        construction_ns,
-                        search_ns,
-                        matches,
-                        name,
-                        Some(matcher.state_width()),
-                        Some(matcher.word_count()),
-                    )
+                    (matches, Some((matcher.state_width(), matcher.word_count())))
                 }
                 Algorithm::FdrSequential | Algorithm::FdrBatched => {
                     let batch_size = match algorithm {
                         Algorithm::FdrSequential => BatchSize::One,
                         _ => batch_size,
                     };
-                    let strategy = grouping_strategy.into();
                     let matcher = FdrFilter::new(
                         patterns,
                         bucket_count,
                         filter_length,
-                        strategy,
+                        grouping_strategy,
                         coefficients,
                     )
                     .with_batch_size(batch_size)
@@ -246,50 +222,23 @@ fn main() -> Result<()> {
                     .with_verification(verification)
                     .with_backend(backend)
                     .map_err(anyhow::Error::msg)?;
-                    let construction_ns = started.elapsed().as_nanos();
-                    let search = Instant::now();
-                    let matches = matcher.find_all(&dataset.input);
-                    let search_ns = search.elapsed().as_nanos();
+                    let matches = timed(&|| matcher.find_all(input));
                     fdr_filter_result = Some(FdrFilterResult {
-                        backend: matcher.backend(),
-                        verification: matcher.verification(),
+                        backend,
+                        verification,
                         verification_table_bytes: matcher.verification_table_bytes(),
                         super_character_bits: super_character_bits.get(),
                         batch_size: batch_size.get(),
                         requested_bucket_count: bucket_count.get(),
                         filter_length: filter_length.get(),
-                        grouping_strategy: strategy,
+                        grouping_strategy,
                         coefficients,
                         buckets: matcher.buckets().to_vec(),
                         effective_lengths: matcher.effective_lengths().to_vec(),
                         mask_table_bytes: matcher.mask_table_bytes(),
-                        statistics: matcher.statistics(&dataset.input),
+                        statistics: matcher.statistics(input),
                     });
-                    (
-                        construction_ns,
-                        search_ns,
-                        matches,
-                        match algorithm {
-                            Algorithm::FdrSequential => "fdr-sequential",
-                            _ => "fdr-batched",
-                        },
-                        Some(matcher.state_width()),
-                        Some(matcher.word_count()),
-                    )
-                }
-                Algorithm::MultipleShiftOr => {
-                    let matcher = MultipleShiftOr::new(patterns);
-                    let construction_ns = started.elapsed().as_nanos();
-                    let search = Instant::now();
-                    let matches = matcher.find_all(&dataset.input);
-                    (
-                        construction_ns,
-                        search.elapsed().as_nanos(),
-                        matches,
-                        "multiple-shift-or",
-                        Some(matcher.state_width()),
-                        Some(matcher.word_count()),
-                    )
+                    (matches, Some((matcher.state_width(), matcher.word_count())))
                 }
             };
             // Normalize output order outside the search measurement.
@@ -301,14 +250,14 @@ fn main() -> Result<()> {
                 architecture: env::consts::ARCH,
                 os: env::consts::OS,
                 debug_assertions: cfg!(debug_assertions),
-                algorithm: name,
-                state_width_bits: width,
-                state_words: words,
+                algorithm,
+                state_width_bits: state.map(|(bits, _)| bits),
+                state_words: state.map(|(_, words)| words),
                 filter: filter_result,
                 fdr_filter: fdr_filter_result,
                 max_pattern_len,
                 config: &dataset.config,
-                input_len: dataset.input.len(),
+                input_len: input.len(),
                 pattern_count: dataset.config.pattern_count,
                 construction_ns,
                 search_ns,

@@ -11,38 +11,46 @@ use simple_fdr::{
 };
 
 fn cli(command: &str, config: &Path, output: &Path) -> Output {
+    run(command, config, output, &[])
+}
+
+fn run(command: &str, config: &Path, output: &Path, options: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_simple-fdr"))
         .arg(command)
         .arg(config)
         .arg(output)
+        .args(options)
         .output()
         .unwrap()
+}
+
+fn assert_success(output: &Output) {
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> T {
+    serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
 }
 
 #[test]
 fn saves_reproducible_data_and_complete_experiment_results() {
     let directory = tempfile::tempdir().unwrap();
-    let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("experiments/stage0.json");
+    let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("experiments/small.json");
     let dataset_path = directory.path().join("dataset.json");
     let result_path = directory.path().join("result.json");
 
     let output = cli("generate", &config, &dataset_path);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let data: Dataset = serde_json::from_slice(&fs::read(&dataset_path).unwrap()).unwrap();
+    assert_success(&output);
+    let data: Dataset = read_json(&dataset_path);
     assert_eq!(data, generate(&data.config).unwrap());
 
     let output = cli("run", &config, &result_path);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let result: serde_json::Value =
-        serde_json::from_slice(&fs::read(&result_path).unwrap()).unwrap();
+    assert_success(&output);
+    let result: serde_json::Value = read_json(&result_path);
     let expected = Naive::new(Patterns::new(data.patterns).unwrap()).find_all(&data.input);
     assert_eq!(result["format_version"], 1);
     assert_eq!(result["generator_version"], 2);
@@ -150,22 +158,15 @@ fn multiple_shift_or_saves_width_and_reference_matches() {
             .unwrap(),
         )
         .unwrap();
-        let output = Command::new(env!("CARGO_BIN_EXE_simple-fdr"))
-            .arg("run")
-            .arg(&config_path)
-            .arg(&result_path)
-            .args(["--algorithm", "multiple-shift-or"])
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
+        let output = run(
+            "run",
+            &config_path,
+            &result_path,
+            &["--algorithm", "multiple-shift-or"],
         );
-        let result: serde_json::Value =
-            serde_json::from_slice(&fs::read(result_path).unwrap()).unwrap();
-        let data =
-            generate(&serde_json::from_slice(&fs::read(config_path).unwrap()).unwrap()).unwrap();
+        assert_success(&output);
+        let result: serde_json::Value = read_json(&result_path);
+        let data = generate(&read_json(&config_path)).unwrap();
         let expected = Naive::new(Patterns::new(data.patterns).unwrap()).find_all(&data.input);
         let width: usize = count * (length + 1);
         assert_eq!(result["algorithm"], "multiple-shift-or");
@@ -197,8 +198,7 @@ fn filter_algorithms_save_reference_matches_configuration_and_statistics() {
             .unwrap(),
         )
         .unwrap();
-        let data =
-            generate(&serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap()).unwrap();
+        let data = generate(&read_json(&config_path)).unwrap();
         let patterns = Patterns::new(data.patterns).unwrap();
         let expected = Naive::new(patterns.clone()).find_all(&data.input);
         for (name, buckets, length) in [
@@ -207,27 +207,21 @@ fn filter_algorithms_save_reference_matches_configuration_and_statistics() {
             ("grouping-truncation", 2, NonZeroUsize::new(2)),
         ] {
             let result_path = directory.path().join(format!("{name}-{count}.json"));
-            let output = Command::new(env!("CARGO_BIN_EXE_simple-fdr"))
-                .arg("run")
-                .arg(&config_path)
-                .arg(&result_path)
-                .args([
+            let output = run(
+                "run",
+                &config_path,
+                &result_path,
+                &[
                     "--algorithm",
                     name,
                     "--bucket-count",
                     "2",
                     "--filter-length",
                     "2",
-                ])
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
+                ],
             );
-            let result: serde_json::Value =
-                serde_json::from_slice(&fs::read(result_path).unwrap()).unwrap();
+            assert_success(&output);
+            let result: serde_json::Value = read_json(&result_path);
             let filter = Filter::new(
                 patterns.clone(),
                 NonZeroUsize::new(buckets).unwrap(),
@@ -266,13 +260,12 @@ fn zero_filter_parameters_fail_before_creating_output() {
     let directory = tempfile::tempdir().unwrap();
     for flag in ["--bucket-count", "--filter-length"] {
         let result = directory.path().join("result.json");
-        let output = Command::new(env!("CARGO_BIN_EXE_simple-fdr"))
-            .arg("run")
-            .arg("unused")
-            .arg(&result)
-            .args(["--algorithm", "grouping-truncation", flag, "0"])
-            .output()
-            .unwrap();
+        let output = run(
+            "run",
+            Path::new("unused"),
+            &result,
+            &["--algorithm", "grouping-truncation", flag, "0"],
+        );
         assert_eq!(output.status.code(), Some(2));
         assert!(!result.exists());
     }
@@ -297,7 +290,7 @@ fn fdr_sequential_saves_partitions_lengths_coefficients_and_matches() {
             .unwrap(),
         )
         .unwrap();
-        let data = generate(&serde_json::from_slice(&fs::read(&config).unwrap()).unwrap()).unwrap();
+        let data = generate(&read_json(&config)).unwrap();
         let patterns = Patterns::new(data.patterns).unwrap();
         let expected = Naive::new(patterns.clone()).find_all(&data.input);
         for (name, strategy) in [
@@ -306,11 +299,11 @@ fn fdr_sequential_saves_partitions_lengths_coefficients_and_matches() {
             ("dynamic-programming", Strategy::DynamicProgramming),
         ] {
             let output_path = directory.path().join(format!("{name}-{count}.json"));
-            let output = Command::new(env!("CARGO_BIN_EXE_simple-fdr"))
-                .arg("run")
-                .arg(&config)
-                .arg(&output_path)
-                .args([
+            let output = run(
+                "run",
+                &config,
+                &output_path,
+                &[
                     "--algorithm",
                     "fdr-sequential",
                     "--bucket-count",
@@ -323,16 +316,10 @@ fn fdr_sequential_saves_partitions_lengths_coefficients_and_matches() {
                     "1.2",
                     "--beta",
                     "2",
-                ])
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
+                ],
             );
-            let result: serde_json::Value =
-                serde_json::from_slice(&fs::read(&output_path).unwrap()).unwrap();
+            assert_success(&output);
+            let result: serde_json::Value = read_json(&output_path);
             let filter = FdrFilter::new(
                 patterns.clone(),
                 NonZeroUsize::new(2).unwrap(),
@@ -385,14 +372,14 @@ fn fdr_sequential_saves_partitions_lengths_coefficients_and_matches() {
 #[test]
 fn batched_fdr_records_sizes_and_matches_sequential() {
     let directory = tempfile::tempdir().unwrap();
-    let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("experiments/stage0.json");
+    let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("experiments/small.json");
     let run = |algorithm: &str, size: &str| {
         let path = directory.path().join(format!("{algorithm}-{size}.json"));
-        let output = Command::new(env!("CARGO_BIN_EXE_simple-fdr"))
-            .arg("run")
-            .arg(&config)
-            .arg(&path)
-            .args([
+        let output = run(
+            "run",
+            &config,
+            &path,
+            &[
                 "--algorithm",
                 algorithm,
                 "--batch-size",
@@ -401,23 +388,18 @@ fn batched_fdr_records_sizes_and_matches_sequential() {
                 "8",
                 "--filter-length",
                 "8",
-            ])
-            .output()
-            .unwrap();
+            ],
+        );
         (output, path)
     };
     let (output, path) = run("fdr-sequential", "8");
     assert!(output.status.success());
-    let reference: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    let reference: serde_json::Value = read_json(&path);
     assert_eq!(reference["fdr_filter"]["batch_size"], 1);
     for size in ["1", "2", "4", "8"] {
         let (output, path) = run("fdr-batched", size);
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let result: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_success(&output);
+        let result: serde_json::Value = read_json(&path);
         assert_eq!(result["algorithm"], "fdr-batched");
         assert_eq!(
             result["fdr_filter"]["batch_size"],
@@ -445,17 +427,17 @@ fn batched_fdr_records_sizes_and_matches_sequential() {
 #[test]
 fn super_character_records_bits_table_size_and_reference_matches() {
     let directory = tempfile::tempdir().unwrap();
-    let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("experiments/stage0.json");
-    let data = generate(&serde_json::from_slice(&fs::read(&config).unwrap()).unwrap()).unwrap();
+    let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("experiments/small.json");
+    let data = generate(&read_json(&config)).unwrap();
     let expected = Naive::new(Patterns::new(data.patterns).unwrap()).find_all(&data.input);
     for algorithm in ["fdr-sequential", "fdr-batched"] {
         for bits in ["0", "4", "8", "1", "9"] {
             let path = directory.path().join(format!("{algorithm}-{bits}.json"));
-            let output = Command::new(env!("CARGO_BIN_EXE_simple-fdr"))
-                .arg("run")
-                .arg(&config)
-                .arg(&path)
-                .args([
+            let output = run(
+                "run",
+                &config,
+                &path,
+                &[
                     "--algorithm",
                     algorithm,
                     "--super-character-bits",
@@ -464,21 +446,15 @@ fn super_character_records_bits_table_size_and_reference_matches() {
                     "2",
                     "--filter-length",
                     "8",
-                ])
-                .output()
-                .unwrap();
+                ],
+            );
             if bits == "1" || bits == "9" {
                 assert_eq!(output.status.code(), Some(2));
                 assert!(!path.exists());
                 continue;
             }
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            let result: serde_json::Value =
-                serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+            assert_success(&output);
+            let result: serde_json::Value = read_json(&path);
             let bits: usize = bits.parse().unwrap();
             assert_eq!(result["fdr_filter"]["super_character_bits"], bits);
             assert_eq!(result["matches"], serde_json::to_value(&expected).unwrap());
@@ -493,17 +469,17 @@ fn super_character_records_bits_table_size_and_reference_matches() {
 #[test]
 fn hash_verifier_records_method_payload_lookups_and_reference_matches() {
     let directory = tempfile::tempdir().unwrap();
-    let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("experiments/stage6.json");
-    let data = generate(&serde_json::from_slice(&fs::read(&config).unwrap()).unwrap()).unwrap();
+    let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("experiments/abcdqrst-2-6.json");
+    let data = generate(&read_json(&config)).unwrap();
     let expected = Naive::new(Patterns::new(data.patterns).unwrap()).find_all(&data.input);
     for algorithm in ["fdr-sequential", "fdr-batched"] {
         for method in ["exhaustive", "hash", "invalid"] {
             let path = directory.path().join(format!("{algorithm}-{method}.json"));
-            let output = Command::new(env!("CARGO_BIN_EXE_simple-fdr"))
-                .arg("run")
-                .arg(&config)
-                .arg(&path)
-                .args([
+            let output = run(
+                "run",
+                &config,
+                &path,
+                &[
                     "--algorithm",
                     algorithm,
                     "--verification",
@@ -514,21 +490,15 @@ fn hash_verifier_records_method_payload_lookups_and_reference_matches() {
                     "8",
                     "--filter-length",
                     "8",
-                ])
-                .output()
-                .unwrap();
+                ],
+            );
             if method == "invalid" {
                 assert_eq!(output.status.code(), Some(2));
                 assert!(!path.exists());
                 continue;
             }
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            let result: serde_json::Value =
-                serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+            assert_success(&output);
+            let result: serde_json::Value = read_json(&path);
             assert_eq!(result["matches"], serde_json::to_value(&expected).unwrap());
             let saved = &result["fdr_filter"];
             assert_eq!(saved["verification"], method);
@@ -547,7 +517,7 @@ fn hash_verifier_records_method_payload_lookups_and_reference_matches() {
 fn simd_backend_is_recorded_and_unsupported_backend_fails() {
     use simple_fdr::simd::Backend;
     let directory = tempfile::tempdir().unwrap();
-    let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("experiments/stage6.json");
+    let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("experiments/abcdqrst-2-6.json");
     let mut baseline = None;
     for (name, backend) in [
         ("integer", Backend::Integer),
@@ -555,11 +525,11 @@ fn simd_backend_is_recorded_and_unsupported_backend_fails() {
         ("sse2", Backend::Sse2),
     ] {
         let path = directory.path().join(format!("{name}.json"));
-        let output = Command::new(env!("CARGO_BIN_EXE_simple-fdr"))
-            .arg("run")
-            .arg(&config)
-            .arg(&path)
-            .args([
+        let output = run(
+            "run",
+            &config,
+            &path,
+            &[
                 "--algorithm",
                 "fdr-batched",
                 "--backend",
@@ -570,17 +540,11 @@ fn simd_backend_is_recorded_and_unsupported_backend_fails() {
                 "8",
                 "--verification",
                 "hash",
-            ])
-            .output()
-            .unwrap();
+            ],
+        );
         if backend.is_supported() {
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            let result: serde_json::Value =
-                serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+            assert_success(&output);
+            let result: serde_json::Value = read_json(&path);
             assert_eq!(result["fdr_filter"]["backend"], name);
             if let Some(expected) = &baseline {
                 assert_eq!(&result["matches"], expected);

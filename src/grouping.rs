@@ -1,10 +1,11 @@
 //! Length-sorted contiguous partitioning with the paper's empirical cost.
 use crate::Patterns;
+use clap::ValueEnum;
 use serde::Serialize;
 use std::num::NonZeroUsize;
 use thiserror::Error;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub enum Strategy {
     Balanced,
@@ -29,6 +30,7 @@ impl Coefficients {
         }
         Ok(Self { alpha, beta })
     }
+
     pub fn alpha(self) -> f64 {
         self.alpha
     }
@@ -36,6 +38,7 @@ impl Coefficients {
         self.beta
     }
 }
+
 impl Default for Coefficients {
     fn default() -> Self {
         Self {

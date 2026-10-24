@@ -3,7 +3,6 @@
 //! Pattern IDs are their positions in [`Patterns`]. Offsets are zero-based and
 //! match ranges are half-open: `input[start..end]`.
 
-pub mod errors;
 pub mod fdr_filter;
 pub mod filter;
 pub mod generate;
@@ -13,8 +12,14 @@ pub mod naive;
 pub mod shift_or;
 pub mod simd;
 
-pub use errors::EmptyPattern;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("pattern {pattern_id} is empty")]
+pub struct EmptyPattern {
+    pub pattern_id: usize,
+}
 
 /// Patterns in ID order. Identical byte strings retain separate IDs.
 #[derive(Debug, Clone, PartialEq, Eq)]

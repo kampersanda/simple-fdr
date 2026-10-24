@@ -1,11 +1,15 @@
 //! Deterministic generated workloads, using ChaCha8 and rand's uniform sampling.
 
-pub use crate::errors::GenerateError;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::Match;
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("{0}")]
+pub struct GenerateError(String);
 
 /// A pattern to copy into the generated input at a known offset.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
