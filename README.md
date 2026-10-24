@@ -212,7 +212,7 @@ Truncationの完全比較が候補より1回少ないのは、入力先頭付近
 
 ## 段階4：原著型の配置とGrouping方針
 
-`paper_filter::PaperFilter`は、原著§4.1、Figure 8–9、Algorithm 1の配置を
+`fdr_filter::FdrFilter`は、原著§4.1、Figure 8–9、Algorithm 1の配置を
 1バイトずつ処理する版（B=1）です。バケットbの実効末尾長は
 `ell[b] = min(指定フィルタ長, バケット内の最短パターン長)`です。
 元パターンの末尾から同じ距離にある文字をまとめてマスクを作り、候補は元パターン全体で検証します。
@@ -271,19 +271,19 @@ DPの区間 `[i, j)` のコストは、原著と同じ `size^alpha / min_length^
 文字の分布や共通接尾辞、指定フィルタ長による情報損失も、このコストには入りません。
 
 ```sh
-cargo run --locked --example paper_filter
-cargo run --locked --release -- run experiments/stage4.json /tmp/fdr-stage4.json --algorithm paper-sequential --bucket-count 8 --filter-length 8 --grouping-strategy dynamic-programming --alpha 1.05 --beta 3
+cargo run --locked --example fdr_filter
+cargo run --locked --release -- run experiments/stage4.json /tmp/fdr-stage4.json --algorithm fdr-sequential --bucket-count 8 --filter-length 8 --grouping-strategy dynamic-programming --alpha 1.05 --beta 3
 cargo build --locked --release
 python3 experiments/stage4.py target/release/simple-fdr > /tmp/fdr-stage4-report.json
 ```
 
-ライブラリでは `PaperFilter::new(patterns, bucket_count, filter_length, strategy, coefficients)` に
+ライブラリでは `FdrFilter::new(patterns, bucket_count, filter_length, strategy, coefficients)` に
 `NonZeroUsize`のバケット数・指定長、`grouping::Strategy`、`grouping::Coefficients`を渡します。
 `scan_candidates`、`scan`、`find_all`、`statistics`は段階3と同じ役割です。
 一致は終了位置、バケット、バケット内の順に返します。参照比較にはソートしてください。
 `initial_state()`と`mask(byte)`で下位ワードから状態とマスクを確認できます。
 
-結果JSONの`paper_filter`に方針、係数、バケットの元ID一覧、`effective_lengths`、候補数、
+結果JSONの`fdr_filter`に方針、係数、バケットの元ID一覧、`effective_lengths`、候補数、
 完全比較回数、真の一致を含まなかった候補数、`mask_table_bytes`を保存します。
 表サイズは `256 * state_words * 8` バイトのマスク本体だけで、Vec管理領域・パターン・
 検証データは含みません。`construction_ns`にはDPとマスク構築を含め、検索と統計収集は分離します。

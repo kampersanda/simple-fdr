@@ -33,13 +33,13 @@
   "beta": 3,
   "comparison": [
     {
-      "algorithm": "paper-sequential",
+      "algorithm": "fdr-sequential",
       "construction_ns": 8709,
       "search_ns": 14314167,
       "match_count": 26188,
       "state_width_bits": 48,
       "state_words": 1,
-      "paper_filter": {
+      "fdr_filter": {
         "requested_bucket_count": 8,
         "filter_length": 8,
         "grouping_strategy": "balanced",
@@ -182,13 +182,13 @@
       }
     },
     {
-      "algorithm": "paper-sequential",
+      "algorithm": "fdr-sequential",
       "construction_ns": 17459,
       "search_ns": 10296417,
       "match_count": 26188,
       "state_width_bits": 64,
       "state_words": 1,
-      "paper_filter": {
+      "fdr_filter": {
         "requested_bucket_count": 8,
         "filter_length": 8,
         "grouping_strategy": "length-sorted",
@@ -331,13 +331,13 @@
       }
     },
     {
-      "algorithm": "paper-sequential",
+      "algorithm": "fdr-sequential",
       "construction_ns": 43375,
       "search_ns": 8943084,
       "match_count": 26188,
       "state_width_bits": 64,
       "state_words": 1,
-      "paper_filter": {
+      "fdr_filter": {
         "requested_bucket_count": 8,
         "filter_length": 8,
         "grouping_strategy": "dynamic-programming",

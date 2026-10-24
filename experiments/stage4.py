@@ -31,11 +31,11 @@ with tempfile.TemporaryDirectory(prefix="simple-fdr-stage4-") as directory:
     reference = run(root / "stage4.json", temp / "reference.json", "naive")
     comparison = []
     for strategy in strategies:
-        result = run(root / "stage4.json", temp / f"{strategy}.json", "paper-sequential", strategy)
+        result = run(root / "stage4.json", temp / f"{strategy}.json", "fdr-sequential", strategy)
         assert result["matches"] == reference["matches"]
         comparison.append({key: result[key] for key in [
             "algorithm", "construction_ns", "search_ns", "match_count",
-            "state_width_bits", "state_words", "paper_filter",
+            "state_width_bits", "state_words", "fdr_filter",
         ]})
     scaling = []
     for count in [100, 1000, 10000]:
@@ -45,7 +45,7 @@ with tempfile.TemporaryDirectory(prefix="simple-fdr-stage4-") as directory:
             "min_pattern_len": 2, "max_pattern_len": 32,
         }))
         for strategy in strategies:
-            result = run(config, temp / f"{count}-{strategy}.json", "paper-sequential", strategy)
+            result = run(config, temp / f"{count}-{strategy}.json", "fdr-sequential", strategy)
             scaling.append({"pattern_count": count, "strategy": strategy,
                             "construction_ns": result["construction_ns"]})
     report = {

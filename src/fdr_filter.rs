@@ -13,7 +13,7 @@ use crate::{
 use std::num::NonZeroUsize;
 
 #[derive(Debug)]
-pub struct PaperFilter {
+pub struct FdrFilter {
     patterns: Patterns,
     buckets: Vec<Vec<usize>>,
     effective_lengths: Vec<usize>,
@@ -21,7 +21,7 @@ pub struct PaperFilter {
     initial: Vec<u64>,
     width: usize,
 }
-impl PaperFilter {
+impl FdrFilter {
     pub fn new(
         patterns: Patterns,
         bucket_count: NonZeroUsize,

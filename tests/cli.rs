@@ -279,15 +279,15 @@ fn zero_filter_parameters_fail_before_creating_output() {
 }
 
 #[test]
-fn paper_sequential_saves_partitions_lengths_coefficients_and_matches() {
+fn fdr_sequential_saves_partitions_lengths_coefficients_and_matches() {
     use simple_fdr::{
+        fdr_filter::FdrFilter,
         grouping::{Coefficients, Strategy},
-        paper_filter::PaperFilter,
     };
     use std::num::NonZeroUsize;
     let directory = tempfile::tempdir().unwrap();
     for count in [0, 3, 65] {
-        let config = directory.path().join(format!("paper-{count}.json"));
+        let config = directory.path().join(format!("fdr-{count}.json"));
         fs::write(
             &config,
             serde_json::to_vec(&serde_json::json!({
@@ -312,7 +312,7 @@ fn paper_sequential_saves_partitions_lengths_coefficients_and_matches() {
                 .arg(&output_path)
                 .args([
                     "--algorithm",
-                    "paper-sequential",
+                    "fdr-sequential",
                     "--bucket-count",
                     "2",
                     "--filter-length",
@@ -333,7 +333,7 @@ fn paper_sequential_saves_partitions_lengths_coefficients_and_matches() {
             );
             let result: serde_json::Value =
                 serde_json::from_slice(&fs::read(&output_path).unwrap()).unwrap();
-            let filter = PaperFilter::new(
+            let filter = FdrFilter::new(
                 patterns.clone(),
                 NonZeroUsize::new(2).unwrap(),
                 NonZeroUsize::new(8).unwrap(),
@@ -343,7 +343,7 @@ fn paper_sequential_saves_partitions_lengths_coefficients_and_matches() {
             assert_eq!(result["matches"], serde_json::to_value(&expected).unwrap());
             assert_eq!(result["state_width_bits"], filter.state_width());
             assert_eq!(result["state_words"], filter.word_count());
-            let saved = &result["paper_filter"];
+            let saved = &result["fdr_filter"];
             assert_eq!(saved["requested_bucket_count"], 2);
             assert_eq!(saved["filter_length"], 8);
             assert_eq!(saved["grouping_strategy"], name);
@@ -369,11 +369,11 @@ fn paper_sequential_saves_partitions_lengths_coefficients_and_matches() {
         }
     }
     for (flag, value) in [("--alpha", "0"), ("--alpha", "NaN"), ("--beta", "inf")] {
-        let result = directory.path().join("invalid-paper.json");
+        let result = directory.path().join("invalid-fdr.json");
         let output = Command::new(env!("CARGO_BIN_EXE_simple-fdr"))
             .args(["run", "unused"])
             .arg(&result)
-            .args(["--algorithm", "paper-sequential", flag, value])
+            .args(["--algorithm", "fdr-sequential", flag, value])
             .output()
             .unwrap();
         assert!(!output.status.success());

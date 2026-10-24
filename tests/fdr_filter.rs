@@ -2,10 +2,10 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use simple_fdr::{
     Patterns,
+    fdr_filter::FdrFilter,
     filter::{Candidate, SearchStats},
     grouping::{Coefficients, Strategy, partition},
     naive::Naive,
-    paper_filter::PaperFilter,
 };
 use std::num::NonZeroUsize;
 
@@ -21,7 +21,7 @@ const STRATEGIES: [Strategy; 3] = [
 fn compare(bytes: Vec<Vec<u8>>, input: &[u8], q: usize, length: usize, strategy: Strategy) {
     let patterns = Patterns::new(bytes).unwrap();
     let expected = Naive::new(patterns.clone()).find_all(input);
-    let filter = PaperFilter::new(
+    let filter = FdrFilter::new(
         patterns.clone(),
         nz(q),
         nz(length),
@@ -61,7 +61,7 @@ fn compare(bytes: Vec<Vec<u8>>, input: &[u8], q: usize, length: usize, strategy:
 
 #[test]
 fn reverse_layout_padding_and_initialization() {
-    let filter = PaperFilter::new(
+    let filter = FdrFilter::new(
         Patterns::new(vec![b"abcd".to_vec(), b"ad".to_vec(), b"bc".to_vec()]).unwrap(),
         nz(2),
         nz(8),
@@ -76,7 +76,7 @@ fn reverse_layout_padding_and_initialization() {
     assert_eq!(filter.mask(b'a'), [0b1011]);
     assert_eq!(filter.mask_table_bytes(), 2048);
     // A separate length-one bucket has zero padding in row 1 for every byte.
-    let padded = PaperFilter::new(
+    let padded = FdrFilter::new(
         Patterns::new(vec![b"a".to_vec(), b"bc".to_vec()]).unwrap(),
         nz(2),
         nz(8),
@@ -126,7 +126,7 @@ fn empty_mixed_lengths_all_bytes_and_word_boundaries() {
             compare(patterns, &[0; 68], q, 65, strategy);
         }
     }
-    let empty = PaperFilter::new(
+    let empty = FdrFilter::new(
         Patterns::new(vec![]).unwrap(),
         nz(8),
         nz(8),
@@ -259,7 +259,7 @@ fn invalid_coefficients_are_rejected() {
 
 #[test]
 fn statistics_count_events_separately_from_matches_and_skip_short_prefixes() {
-    let filter = PaperFilter::new(
+    let filter = FdrFilter::new(
         Patterns::new(vec![b"ab".to_vec(), b"cd".to_vec()]).unwrap(),
         nz(1),
         nz(8),
@@ -274,7 +274,7 @@ fn statistics_count_events_separately_from_matches_and_skip_short_prefixes() {
             false_positive_candidates: 1,
         }
     );
-    let duplicates = PaperFilter::new(
+    let duplicates = FdrFilter::new(
         Patterns::new(vec![b"a".to_vec(), b"aa".to_vec(), b"aa".to_vec()]).unwrap(),
         nz(1),
         nz(8),
@@ -290,7 +290,7 @@ fn statistics_count_events_separately_from_matches_and_skip_short_prefixes() {
             false_positive_candidates: 0,
         }
     );
-    let truncated = PaperFilter::new(
+    let truncated = FdrFilter::new(
         Patterns::new(vec![b"abcd".to_vec()]).unwrap(),
         nz(1),
         nz(2),

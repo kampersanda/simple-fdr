@@ -1,7 +1,7 @@
 use simple_fdr::{
     Patterns,
+    fdr_filter::FdrFilter,
     grouping::{Coefficients, Strategy},
-    paper_filter::PaperFilter,
 };
 use std::num::NonZeroUsize;
 fn main() {
@@ -11,7 +11,7 @@ fn main() {
         Strategy::LengthSorted,
         Strategy::DynamicProgramming,
     ] {
-        let filter = PaperFilter::new(
+        let filter = FdrFilter::new(
             patterns.clone(),
             NonZeroUsize::new(2).unwrap(),
             NonZeroUsize::new(8).unwrap(),

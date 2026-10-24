@@ -11,12 +11,12 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use simple_fdr::{
     Match, Patterns,
+    fdr_filter::FdrFilter,
     filter::{Filter, SearchStats},
     generate::{self, Config, Dataset},
     grouping::{Coefficients, Strategy},
     multiple_shift_or::MultipleShiftOr,
     naive::Naive,
-    paper_filter::PaperFilter,
 };
 
 #[derive(Parser)]
@@ -36,13 +36,13 @@ enum Command {
         files: Files,
         #[arg(long, value_enum, default_value_t = Algorithm::Naive)]
         algorithm: Algorithm,
-        /// Maximum number of buckets (grouping modes and paper-sequential).
+        /// Maximum number of buckets (grouping modes and fdr-sequential).
         #[arg(long, default_value = "2")]
         bucket_count: NonZeroUsize,
-        /// Maximum suffix length (truncation modes and paper-sequential).
+        /// Maximum suffix length (truncation modes and fdr-sequential).
         #[arg(long, default_value = "2")]
         filter_length: NonZeroUsize,
-        /// Bucket partition for the paper-layout sequential filter.
+        /// Bucket partition for the FDR sequential filter.
         #[arg(long, value_enum, default_value_t = GroupingStrategy::DynamicProgramming)]
         grouping_strategy: GroupingStrategy,
         #[arg(long, default_value = "1.05")]
@@ -59,7 +59,7 @@ enum Algorithm {
     Grouping,
     Truncation,
     GroupingTruncation,
-    PaperSequential,
+    FdrSequential,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -103,7 +103,7 @@ struct ResultFile<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     filter: Option<FilterResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    paper_filter: Option<PaperFilterResult>,
+    fdr_filter: Option<FdrFilterResult>,
     max_pattern_len: usize,
     config: &'a Config,
     input_len: usize,
@@ -126,7 +126,7 @@ struct FilterResult {
 }
 
 #[derive(Serialize)]
-struct PaperFilterResult {
+struct FdrFilterResult {
     requested_bucket_count: usize,
     filter_length: usize,
     grouping_strategy: Strategy,
@@ -158,7 +158,7 @@ fn main() -> Result<()> {
             let patterns = Patterns::new(dataset.patterns)?;
             let max_pattern_len = patterns.as_slice().iter().map(Vec::len).max().unwrap_or(0);
             let mut filter_result = None;
-            let mut paper_filter_result = None;
+            let mut fdr_filter_result = None;
             let (construction_ns, search_ns, mut matches, name, width, words) = match algorithm {
                 Algorithm::Naive => {
                     let matcher = Naive::new(patterns);
@@ -205,9 +205,9 @@ fn main() -> Result<()> {
                         Some(matcher.word_count()),
                     )
                 }
-                Algorithm::PaperSequential => {
+                Algorithm::FdrSequential => {
                     let strategy = grouping_strategy.into();
-                    let matcher = PaperFilter::new(
+                    let matcher = FdrFilter::new(
                         patterns,
                         bucket_count,
                         filter_length,
@@ -218,7 +218,7 @@ fn main() -> Result<()> {
                     let search = Instant::now();
                     let matches = matcher.find_all(&dataset.input);
                     let search_ns = search.elapsed().as_nanos();
-                    paper_filter_result = Some(PaperFilterResult {
+                    fdr_filter_result = Some(FdrFilterResult {
                         requested_bucket_count: bucket_count.get(),
                         filter_length: filter_length.get(),
                         grouping_strategy: strategy,
@@ -232,7 +232,7 @@ fn main() -> Result<()> {
                         construction_ns,
                         search_ns,
                         matches,
-                        "paper-sequential",
+                        "fdr-sequential",
                         Some(matcher.state_width()),
                         Some(matcher.word_count()),
                     )
@@ -265,7 +265,7 @@ fn main() -> Result<()> {
                 state_width_bits: width,
                 state_words: words,
                 filter: filter_result,
-                paper_filter: paper_filter_result,
+                fdr_filter: fdr_filter_result,
                 max_pattern_len,
                 config: &dataset.config,
                 input_len: dataset.input.len(),
