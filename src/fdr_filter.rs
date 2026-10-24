@@ -10,12 +10,9 @@ use crate::{
     filter::{Candidate, SearchStats},
     grouping::{self, Coefficients, Strategy},
 };
+use hashbrown::HashMap;
 use serde::Serialize;
-use std::{
-    collections::{HashMap, hash_map::DefaultHasher},
-    hash::{Hash, Hasher},
-    num::NonZeroUsize,
-};
+use std::num::NonZeroUsize;
 
 /// Verification strategy; filtering and candidate order are unchanged.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -35,12 +32,6 @@ impl std::str::FromStr for Verification {
         }
     }
 }
-fn suffix_hash(bytes: &[u8]) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    hasher.finish()
-}
-
 /// Number of input bytes combined before shifting the state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatchSize {
@@ -94,7 +85,7 @@ impl std::str::FromStr for SuperCharacterBits {
 #[derive(Debug)]
 pub struct FdrFilter {
     verification: Verification,
-    verification_tables: Vec<HashMap<u64, Vec<usize>>>,
+    verification_tables: Vec<HashMap<Vec<u8>, Vec<usize>>>,
     patterns: Patterns,
     buckets: Vec<Vec<usize>>,
     effective_lengths: Vec<usize>,
@@ -161,18 +152,18 @@ impl FdrFilter {
             batch_size: BatchSize::One,
         }
     }
-    /// Index each bucket's common suffix. Equal digests retain all pattern IDs
+    /// Index each bucket's common suffix. Equal suffixes retain all pattern IDs
     /// and are always followed by comparison of the entire original pattern.
     pub fn with_verification(mut self, verification: Verification) -> Self {
         self.verification = verification;
         self.verification_tables.clear();
         if verification == Verification::Hash {
             for (b, bucket) in self.buckets.iter().enumerate() {
-                let mut table: HashMap<u64, Vec<usize>> = HashMap::new();
+                let mut table: HashMap<Vec<u8>, Vec<usize>> = HashMap::new();
                 for &id in bucket {
                     let pattern = &self.patterns.as_slice()[id];
-                    let digest = suffix_hash(&pattern[pattern.len() - self.effective_lengths[b]..]);
-                    table.entry(digest).or_default().push(id);
+                    let suffix = pattern[pattern.len() - self.effective_lengths[b]..].to_vec();
+                    table.entry(suffix).or_default().push(id);
                 }
                 self.verification_tables.push(table);
             }
@@ -182,18 +173,13 @@ impl FdrFilter {
     pub fn verification(&self) -> Verification {
         self.verification
     }
-    /// Logical payload: u64 digests and usize IDs. Excludes HashMap capacity,
+    /// Logical payload: suffix bytes and usize IDs. Excludes HashMap capacity,
     /// control bytes, Vec headers/capacity, allocator overhead and patterns.
     pub fn verification_table_bytes(&self) -> usize {
         self.verification_tables
             .iter()
-            .map(|table| {
-                table.len() * size_of::<u64>()
-                    + table
-                        .values()
-                        .map(|ids| ids.len() * size_of::<usize>())
-                        .sum::<usize>()
-            })
+            .flat_map(|table| table.iter())
+            .map(|(suffix, ids)| suffix.len() + ids.len() * size_of::<usize>())
             .sum()
     }
     /// Build correlated byte-pair masks, retaining byte masks for end of input.
@@ -387,12 +373,11 @@ impl FdrFilter {
                 Verification::Hash => {
                     let length = self.effective_lengths[candidate.bucket_id];
                     // Initial state guarantees end >= common suffix length.
-                    let digest = suffix_hash(&input[candidate.end - length..candidate.end]);
                     if STATS {
                         stats.hash_lookups += 1;
                     }
                     self.verification_tables[candidate.bucket_id]
-                        .get(&digest)
+                        .get(&input[candidate.end - length..candidate.end])
                         .map_or(&[][..], Vec::as_slice)
                 }
             };
@@ -438,9 +423,10 @@ impl FdrFilter {
 mod tests {
     use super::*;
     #[test]
-    fn digest_collision_keeps_duplicate_ids_and_requires_full_comparison() {
-        let patterns = Patterns::new(vec![b"ab".to_vec(), b"cd".to_vec(), b"ab".to_vec()]).unwrap();
-        let mut filter = FdrFilter::new(
+    fn shared_suffix_keeps_duplicate_ids_and_requires_full_comparison() {
+        let patterns =
+            Patterns::new(vec![b"xab".to_vec(), b"yab".to_vec(), b"xab".to_vec()]).unwrap();
+        let filter = FdrFilter::new(
             patterns,
             NonZeroUsize::new(1).unwrap(),
             NonZeroUsize::new(2).unwrap(),
@@ -448,15 +434,16 @@ mod tests {
             Coefficients::default(),
         )
         .with_verification(Verification::Hash);
-        // Inject lists that distinct suffixes would share on a digest collision.
-        filter.verification_tables[0].insert(suffix_hash(b"ab"), vec![0, 1, 2]);
-        filter.verification_tables[0].insert(suffix_hash(b"ad"), vec![0, 1, 2]);
-        let found = filter.find_all(b"abad");
+        assert_eq!(
+            filter.verification_tables[0].get(b"ab".as_slice()).unwrap(),
+            &[0, 1, 2]
+        );
+        let found = filter.find_all(b"xabzab");
         assert_eq!(
             found.iter().map(|m| m.pattern_id).collect::<Vec<_>>(),
             vec![0, 2]
         );
-        let stats = filter.statistics(b"abad");
+        let stats = filter.statistics(b"xabzab");
         assert_eq!(stats.candidate_count, 2);
         assert_eq!(stats.hash_lookups, 2);
         assert_eq!(stats.full_comparisons, 6);

@@ -133,7 +133,7 @@ fn hash_misses_shared_suffixes_and_reduced_comparisons() {
     assert_eq!(exhaustive.full_comparisons, 6);
     assert_eq!(
         filter.verification_table_bytes(),
-        2 * 8 + 3 * size_of::<usize>()
+        2 * 2 + 3 * size_of::<usize>()
     );
     assert_eq!(filter.find_all(b"xab").len(), 1);
 }
