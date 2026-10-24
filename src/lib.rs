@@ -11,6 +11,7 @@ pub mod grouping;
 pub mod multiple_shift_or;
 pub mod naive;
 pub mod shift_or;
+pub mod simd;
 
 pub use errors::EmptyPattern;
 use serde::{Deserialize, Serialize};

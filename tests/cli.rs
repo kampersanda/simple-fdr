@@ -542,3 +542,55 @@ fn hash_verifier_records_method_payload_lookups_and_reference_matches() {
         }
     }
 }
+
+#[test]
+fn simd_backend_is_recorded_and_unsupported_backend_fails() {
+    use simple_fdr::simd::Backend;
+    let directory = tempfile::tempdir().unwrap();
+    let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("experiments/stage6.json");
+    let mut baseline = None;
+    for (name, backend) in [
+        ("integer", Backend::Integer),
+        ("neon", Backend::Neon),
+        ("sse2", Backend::Sse2),
+    ] {
+        let path = directory.path().join(format!("{name}.json"));
+        let output = Command::new(env!("CARGO_BIN_EXE_simple-fdr"))
+            .arg("run")
+            .arg(&config)
+            .arg(&path)
+            .args([
+                "--algorithm",
+                "fdr-batched",
+                "--backend",
+                name,
+                "--bucket-count",
+                "8",
+                "--filter-length",
+                "8",
+                "--verification",
+                "hash",
+            ])
+            .output()
+            .unwrap();
+        if backend.is_supported() {
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let result: serde_json::Value =
+                serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+            assert_eq!(result["fdr_filter"]["backend"], name);
+            if let Some(expected) = &baseline {
+                assert_eq!(&result["matches"], expected);
+            } else {
+                baseline = Some(result["matches"].clone());
+            }
+        } else {
+            assert!(!output.status.success());
+            assert!(String::from_utf8_lossy(&output.stderr).contains("unavailable"));
+            assert!(!path.exists());
+        }
+    }
+}

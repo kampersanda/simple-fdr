@@ -17,6 +17,7 @@ use simple_fdr::{
     grouping::{Coefficients, Strategy},
     multiple_shift_or::MultipleShiftOr,
     naive::Naive,
+    simd::Backend,
 };
 
 #[derive(Parser)]
@@ -48,6 +49,9 @@ enum Command {
         /// Low bits of the next byte included in FDR masks (0, 4 or 8).
         #[arg(long, default_value = "0")]
         super_character_bits: SuperCharacterBits,
+        /// FDR mask backend: integer, neon or sse2.
+        #[arg(long, default_value = "integer")]
+        backend: Backend,
         /// Candidate verifier for FDR modes (exhaustive or hash).
         #[arg(long, default_value = "exhaustive")]
         verification: Verification,
@@ -137,6 +141,7 @@ struct FilterResult {
 
 #[derive(Serialize)]
 struct FdrFilterResult {
+    backend: Backend,
     verification: Verification,
     verification_table_bytes: usize,
     super_character_bits: usize,
@@ -164,6 +169,7 @@ fn main() -> Result<()> {
             batch_size,
             super_character_bits,
             verification,
+            backend,
             alpha,
             beta,
         } => {
@@ -237,12 +243,15 @@ fn main() -> Result<()> {
                     )
                     .with_batch_size(batch_size)
                     .with_super_character(super_character_bits)
-                    .with_verification(verification);
+                    .with_verification(verification)
+                    .with_backend(backend)
+                    .map_err(anyhow::Error::msg)?;
                     let construction_ns = started.elapsed().as_nanos();
                     let search = Instant::now();
                     let matches = matcher.find_all(&dataset.input);
                     let search_ns = search.elapsed().as_nanos();
                     fdr_filter_result = Some(FdrFilterResult {
+                        backend: matcher.backend(),
                         verification: matcher.verification(),
                         verification_table_bytes: matcher.verification_table_bytes(),
                         super_character_bits: super_character_bits.get(),
