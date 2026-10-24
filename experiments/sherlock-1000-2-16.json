@@ -1,0 +1,7 @@
+{
+  "seed": 2,
+  "text": "../data/sherlock.txt",
+  "pattern_count": 1000,
+  "min_pattern_len": 2,
+  "max_pattern_len": 16
+}

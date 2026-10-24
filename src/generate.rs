@@ -1,6 +1,11 @@
-//! Deterministic generated workloads, using ChaCha8 and rand's uniform sampling.
+//! Deterministic workloads, using ChaCha8 and rand's uniform sampling.
+//!
+//! A configuration either generates random bytes ([`Config`]) or draws words
+//! from a real text ([`WordsConfig`]).
 
-use rand::{Rng, SeedableRng};
+use std::{collections::BTreeSet, fs, path::Path, path::PathBuf};
+
+use rand::{Rng, SeedableRng, seq::index};
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -40,10 +45,49 @@ fn all_bytes() -> Vec<u8> {
     (0..=255).collect()
 }
 
+/// Uses the whole text file as input and samples distinct words as patterns.
+/// A word is a maximal run of ASCII letters; case is kept. Words whose length
+/// is in the inclusive range are sorted, and `pattern_count` of them are drawn
+/// without replacement. Pattern IDs follow the drawing order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WordsConfig {
+    pub seed: u64,
+    /// Relative paths are resolved from the configuration file's directory.
+    pub text: PathBuf,
+    pub pattern_count: usize,
+    pub min_pattern_len: usize,
+    pub max_pattern_len: usize,
+}
+
+/// The JSON shape selects the variant: `WordsConfig` is the one with `text`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DatasetConfig {
+    Random(Config),
+    Words(WordsConfig),
+}
+
+impl DatasetConfig {
+    /// Builds the dataset; `base` is the directory containing the configuration.
+    pub fn build(&self, base: &Path) -> Result<Dataset, GenerateError> {
+        match self {
+            Self::Random(config) => generate(config),
+            Self::Words(config) => {
+                let path = base.join(&config.text);
+                let text = fs::read(&path).map_err(|error| {
+                    GenerateError(format!("failed to read text {}: {error}", path.display()))
+                })?;
+                sample_words(config, text)
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Dataset {
     pub generator_version: u32,
-    pub config: Config,
+    pub config: DatasetConfig,
     pub patterns: Vec<Vec<u8>>,
     pub input: Vec<u8>,
     /// Guaranteed occurrences, not an exhaustive list of matches.
@@ -105,7 +149,7 @@ pub fn generate(config: &Config) -> Result<Dataset, GenerateError> {
     }
     Ok(Dataset {
         generator_version: 2,
-        config: config.clone(),
+        config: DatasetConfig::Random(config.clone()),
         patterns,
         input,
         planted_matches,
@@ -116,4 +160,37 @@ fn random_bytes(rng: &mut ChaCha8Rng, len: usize, alphabet: &[u8]) -> Vec<u8> {
     (0..len)
         .map(|_| alphabet[rng.random_range(0..alphabet.len() as u64) as usize])
         .collect()
+}
+
+pub fn sample_words(config: &WordsConfig, text: Vec<u8>) -> Result<Dataset, GenerateError> {
+    if config.min_pattern_len == 0 || config.max_pattern_len < config.min_pattern_len {
+        return Err(GenerateError(
+            "require 1 <= min_pattern_len <= max_pattern_len".into(),
+        ));
+    }
+    let lengths = config.min_pattern_len..=config.max_pattern_len;
+    let words: Vec<&[u8]> = text
+        .split(|byte| !byte.is_ascii_alphabetic())
+        .filter(|word| lengths.contains(&word.len()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if words.len() < config.pattern_count {
+        return Err(GenerateError(format!(
+            "text has only {} distinct words in the length range",
+            words.len()
+        )));
+    }
+    let mut rng = ChaCha8Rng::seed_from_u64(config.seed);
+    let patterns = index::sample(&mut rng, words.len(), config.pattern_count)
+        .into_iter()
+        .map(|i| words[i].to_vec())
+        .collect();
+    Ok(Dataset {
+        generator_version: 2,
+        config: DatasetConfig::Words(config.clone()),
+        patterns,
+        input: text,
+        planted_matches: Vec::new(),
+    })
 }

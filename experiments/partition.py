@@ -41,11 +41,11 @@ def run(config, output, algorithm, strategy="balanced"):
 
 with tempfile.TemporaryDirectory(prefix="simple-fdr-partition-") as directory:
     temp = Path(directory)
-    reference = run(root / "abcd-2-32.json", temp / "reference.json", "naive")
+    reference = run(root / "sherlock-1000-2-16.json", temp / "reference.json", "naive")
     comparison = []
     for strategy in strategies:
         result = run(
-            root / "abcd-2-32.json",
+            root / "sherlock-1000-2-16.json",
             temp / f"{strategy}.json",
             "fdr-sequential",
             strategy,
