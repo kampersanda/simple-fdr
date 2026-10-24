@@ -3,11 +3,13 @@
 //! Pattern IDs are their positions in [`Patterns`]. Offsets are zero-based and
 //! match ranges are half-open: `input[start..end]`.
 
+pub mod errors;
 pub mod generate;
 pub mod naive;
+pub mod shift_or;
 
+pub use errors::EmptyPattern;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 /// Patterns in ID order. Identical byte strings retain separate IDs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,12 +26,6 @@ impl Patterns {
     pub fn as_slice(&self) -> &[Vec<u8>] {
         &self.0
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-#[error("pattern {pattern_id} is empty")]
-pub struct EmptyPattern {
-    pub pattern_id: usize,
 }
 
 /// One occurrence, including its pattern ID and half-open byte range.
