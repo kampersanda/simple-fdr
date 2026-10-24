@@ -6,7 +6,9 @@
 """Turn the output of bench.py into Markdown tables and SVG charts.
 
 Run: uv run experiments/report.py BENCH.json OUTPUT_DIR
-Writes OUTPUT_DIR/results.md and one techniques-<case>.svg per case.
+Writes OUTPUT_DIR/results.md, one techniques-<case>.svg per case, and one
+scaling-<text>-<min>-<max>.svg per series of word datasets differing only in
+pattern count.
 """
 
 import json
@@ -113,5 +115,64 @@ for case in report["cases"]:
     figure.savefig(output / f"techniques-{name}.svg")
     plt.close(figure)
     lines += [f"![{name}](techniques-{name}.svg)", ""]
+
+# Word datasets that differ only in pattern count form one scaling series.
+series = {}
+for case in report["cases"]:
+    config = case["config"]
+    if "text" in config:
+        key = (config["text"], config["min_pattern_len"], config["max_pattern_len"])
+        series.setdefault(key, []).append(case)
+plotted = ["naive", "multiple-shift-or", "fdr-sequential"]
+plotted += ["fdr-super-character-4", "fdr-hash", "fdr-all"]
+for (text, low, high), cases in series.items():
+    if len(cases) < 2:
+        continue
+    cases.sort(key=lambda case: case["pattern_count"])
+    name = f"{Path(text).stem}-{low}-{high}"
+    counts = [case["pattern_count"] for case in cases]
+    lines += [
+        f"## パターン数による変化（{name}）",
+        "",
+        f"`{text}` から長さ{low}〜{high}の単語を選んだ設定。値はMiB/s（括弧内は候補数）。",
+        "",
+    ]
+    rows = []
+    for i, entry in enumerate(cases[0]["techniques"]):
+        row = [entry["name"]]
+        for case in cases:
+            other = case["techniques"][i]
+            cell = f"{mib_per_second(case, other):,.1f}"
+            if "statistics" in other:
+                cell += f"（{other['statistics']['candidate_count']:,}）"
+            row.append(cell)
+        rows.append(row)
+    lines += table(["方式"] + [f"{count:,}個" for count in counts], rows)
+    lines += [
+        "",
+        "| 一致数 | " + " | ".join(f"{c['match_count']:,}" for c in cases) + " |",
+        "|---|" + "---:|" * len(cases),
+        "",
+    ]
+
+    figure, axis = plt.subplots(figsize=(7, 4.5))
+    for technique in plotted:
+        speeds = [
+            mib_per_second(case, entry)
+            for case in cases
+            for entry in case["techniques"]
+            if entry["name"] == technique
+        ]
+        axis.plot(counts, speeds, marker="o", label=technique)
+    axis.set_xscale("log")
+    axis.set_yscale("log")
+    axis.set_xlabel("pattern count (log scale)")
+    axis.set_ylabel("throughput (MiB/s, log scale)")
+    axis.set_title(name)
+    axis.legend()
+    figure.tight_layout()
+    figure.savefig(output / f"scaling-{name}.svg")
+    plt.close(figure)
+    lines += [f"![{name}](scaling-{name}.svg)", ""]
 
 (output / "results.md").write_text("\n".join(lines))

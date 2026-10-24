@@ -32,7 +32,9 @@ report = {
         }
         for name in [
             "abcdqrst-2-6.json",
+            "sherlock-10-4-16.json",
             "sherlock-100-4-16.json",
+            "sherlock-1000-4-16.json",
             "sherlock-1000-2-16.json",
         ]
     ],
