@@ -43,11 +43,11 @@ def table(header, rows):
 # DP partition and verification uses hashing in every FDR row, since the article
 # does not compare those choices. SIMD is whichever backend was measured.
 ARTICLE = [
-    ("naive", None),
-    ("multiple Shift-OR", None),
-    ("FDR (grouping + truncation)", (0, 1, False)),
-    ("+ batch of 8 bytes", (0, 8, False)),
-    ("+ super character (4 bits)", (4, 8, False)),
+    ("Naive", None),
+    ("Multiple Shift-OR", None),
+    ("FDR (Grouping + Truncation)", (0, 1, False)),
+    ("+ Multi-Character Input (8 bytes)", (0, 8, False)),
+    ("+ Super Character (4 bits)", (4, 8, False)),
     ("+ SIMD", (4, 8, True)),
 ]
 

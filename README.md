@@ -246,7 +246,7 @@ python3 experiments/partition.py target/release/simple-fdr > experiments/results
 まとめて、パターン数に対するスループットと候補数の表とグラフも作ります。
 設定ごとの表には計測したすべての構成を載せますが、グラフとパターン数の表は、解説記事で説明する
 手法を順に加えた6構成に絞ります（参照実装、複数パターンShift-OR、Grouping・Truncationを使うFDR、
-＋一括8バイト、＋Super Character 4ビット、＋SIMD）。記事で比較していないGrouping方針と検証方法は、
+＋複数の入力文字をまとめる処理（8バイト）、＋Super Character（4ビット）、＋SIMD）。記事で比較していないGrouping方針と検証方法は、
 それぞれ動的計画法とハッシュ検証に固定します。依存するmatplotlibはスクリプト内のメタデータで指定しており、
 `uv run`が用意します。`experiments/results/`は計測環境に依存するため、リポジトリに含めません。
 `partition.py`は`sherlock-1000-2-16.json`でのGrouping方針ごとの結果と、ランダムに生成した
