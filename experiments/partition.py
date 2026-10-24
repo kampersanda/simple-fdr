@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Run stage 4 correctness/partition comparison and construction scaling probes.
+"""Compare grouping strategies and probe construction scaling.
 
-Build with cargo build --release --locked, then run:
-python3 experiments/stage4.py target/release/simple-fdr > /tmp/stage4-report.json
+Build: cargo build --locked --release
+Run: python3 experiments/partition.py target/release/simple-fdr
 Each time is one CLI sample, not a throughput benchmark.
 """
 
@@ -39,13 +39,16 @@ def run(config, output, algorithm, strategy="balanced"):
     return json.loads(output.read_text())
 
 
-with tempfile.TemporaryDirectory(prefix="simple-fdr-stage4-") as directory:
+with tempfile.TemporaryDirectory(prefix="simple-fdr-partition-") as directory:
     temp = Path(directory)
-    reference = run(root / "stage4.json", temp / "reference.json", "naive")
+    reference = run(root / "abcd-2-32.json", temp / "reference.json", "naive")
     comparison = []
     for strategy in strategies:
         result = run(
-            root / "stage4.json", temp / f"{strategy}.json", "fdr-sequential", strategy
+            root / "abcd-2-32.json",
+            temp / f"{strategy}.json",
+            "fdr-sequential",
+            strategy,
         )
         assert result["matches"] == reference["matches"]
         comparison.append(

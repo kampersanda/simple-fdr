@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Build: cargo build --locked --release --example hash_verification
-Run: python3 experiments/stage7.py target/release/examples/hash_verification
+"""Build: cargo build --locked --release --example bench
+Run: python3 experiments/bench.py target/release/examples/bench
 """
 
 import json
@@ -25,7 +25,7 @@ report = {
     "build": "Cargo default release profile; no custom RUSTFLAGS",
     "cases": [
         json.loads(subprocess.check_output([str(binary), str(root / name)], text=True))
-        for name in ["stage5.json", "stage4.json", "stage6.json"]
+        for name in ["bytes-8-32.json", "abcd-2-32.json", "abcdqrst-2-6.json"]
     ],
 }
 print(json.dumps(report, indent=2))

@@ -5,40 +5,36 @@
 //! Before byte 0, the first length-1 bits of each bucket are one, preventing
 //! candidates whose suffix would begin before the input. For each byte:
 //! R |= mask[byte]; report zero bits in row 0; R >>= q (zero fill).
+//! Batching ORs B shifted masks before reporting B rows and shifting by B*q.
 use crate::simd::{self, Backend};
 use crate::{
     Match, Patterns,
-    filter::{Candidate, SearchStats},
+    filter::{Candidate, SearchStats, verify},
     grouping::{self, Coefficients, Strategy},
 };
+use clap::ValueEnum;
 use hashbrown::HashMap;
 use serde::Serialize;
 use std::num::NonZeroUsize;
 
 /// Verification strategy; filtering and candidate order are unchanged.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub enum Verification {
-    #[default]
     Exhaustive,
     Hash,
 }
-impl std::str::FromStr for Verification {
-    type Err = &'static str;
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "exhaustive" => Ok(Self::Exhaustive),
-            "hash" => Ok(Self::Hash),
-            _ => Err("verification must be exhaustive or hash"),
-        }
-    }
-}
+
 /// Number of input bytes combined before shifting the state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum BatchSize {
+    #[value(name = "1")]
     One = 1,
+    #[value(name = "2")]
     Two = 2,
+    #[value(name = "4")]
     Four = 4,
+    #[value(name = "8")]
     Eight = 8,
 }
 impl BatchSize {
@@ -46,24 +42,15 @@ impl BatchSize {
         self as usize
     }
 }
-impl std::str::FromStr for BatchSize {
-    type Err = &'static str;
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "1" => Ok(Self::One),
-            "2" => Ok(Self::Two),
-            "4" => Ok(Self::Four),
-            "8" => Ok(Self::Eight),
-            _ => Err("batch size must be 1, 2, 4 or 8"),
-        }
-    }
-}
 
 /// Low bits of the next byte included in each mask lookup.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum SuperCharacterBits {
+    #[value(name = "0")]
     Zero = 0,
+    #[value(name = "4")]
     Four = 4,
+    #[value(name = "8")]
     Eight = 8,
 }
 impl SuperCharacterBits {
@@ -71,23 +58,9 @@ impl SuperCharacterBits {
         self as usize
     }
 }
-impl std::str::FromStr for SuperCharacterBits {
-    type Err = &'static str;
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "0" => Ok(Self::Zero),
-            "4" => Ok(Self::Four),
-            "8" => Ok(Self::Eight),
-            _ => Err("super character bits must be 0, 4 or 8"),
-        }
-    }
-}
 
 #[derive(Debug)]
 pub struct FdrFilter {
-    backend: Backend,
-    verification: Verification,
-    verification_tables: Vec<HashMap<Vec<u8>, Vec<usize>>>,
     patterns: Patterns,
     buckets: Vec<Vec<usize>>,
     effective_lengths: Vec<usize>,
@@ -97,7 +70,11 @@ pub struct FdrFilter {
     initial: Vec<u64>,
     width: usize,
     batch_size: BatchSize,
+    backend: Backend,
+    verification: Verification,
+    verification_tables: Vec<HashMap<Vec<u8>, Vec<usize>>>,
 }
+
 impl FdrFilter {
     pub fn new(
         patterns: Patterns,
@@ -118,43 +95,66 @@ impl FdrFilter {
                     .min(filter_length.get())
             })
             .collect();
-        let rows = effective_lengths.iter().copied().max().unwrap_or(0);
         let q = buckets.len();
-        let width = q * rows;
-        let mut masks = vec![vec![0; width.div_ceil(64)]; 256];
+        let width = q * effective_lengths.iter().copied().max().unwrap_or(0);
         let mut initial = vec![0; width.div_ceil(64)];
-        for (b, bucket) in buckets.iter().enumerate() {
-            let length = effective_lengths[b];
-            for d in 0..length {
+        for (b, &length) in effective_lengths.iter().enumerate() {
+            for d in 0..length.saturating_sub(1) {
+                let bit = d * q + b;
+                initial[bit / 64] |= 1 << (bit % 64);
+            }
+        }
+        let mut filter = Self {
+            patterns,
+            buckets,
+            effective_lengths,
+            masks: Vec::new(),
+            super_masks: Vec::new(),
+            super_character_bits: SuperCharacterBits::Zero,
+            initial,
+            width,
+            batch_size: BatchSize::One,
+            backend: Backend::Integer,
+            verification: Verification::Exhaustive,
+            verification_tables: Vec::new(),
+        };
+        filter.masks = filter.build_masks(0);
+        filter
+    }
+
+    /// Masks indexed by `(byte << bits) | (next & (2^bits - 1))`. With zero
+    /// bits this is the byte-only table. The final pattern byte (d = 0)
+    /// accepts every next-byte value.
+    fn build_masks(&self, bits: usize) -> Vec<Vec<u64>> {
+        let variants = 1 << bits;
+        let q = self.buckets.len();
+        let mut masks = vec![vec![0; self.initial.len()]; 256 * variants];
+        for (b, bucket) in self.buckets.iter().enumerate() {
+            for d in 0..self.effective_lengths[b] {
                 let bit = d * q + b;
                 let flag = 1u64 << (bit % 64);
                 for mask in &mut masks {
                     mask[bit / 64] |= flag;
                 }
                 for &id in bucket {
-                    let pattern = &patterns.as_slice()[id];
-                    masks[pattern[pattern.len() - 1 - d] as usize][bit / 64] &= !flag;
-                }
-                if d + 1 < length {
-                    initial[bit / 64] |= flag;
+                    let pattern = &self.patterns.as_slice()[id];
+                    let position = pattern.len() - 1 - d;
+                    let base = usize::from(pattern[position]) << bits;
+                    let nexts = if d == 0 {
+                        0..variants
+                    } else {
+                        let next = usize::from(pattern[position + 1]) & (variants - 1);
+                        next..next + 1
+                    };
+                    for next in nexts {
+                        masks[base | next][bit / 64] &= !flag;
+                    }
                 }
             }
         }
-        Self {
-            backend: Backend::Integer,
-            verification: Verification::Exhaustive,
-            verification_tables: Vec::new(),
-            patterns,
-            buckets,
-            effective_lengths,
-            masks,
-            super_masks: Vec::new(),
-            super_character_bits: SuperCharacterBits::Zero,
-            initial,
-            width,
-            batch_size: BatchSize::One,
-        }
+        masks
     }
+
     /// Reject unsupported architectures; layout and candidate extraction stay shared.
     pub fn with_backend(mut self, backend: Backend) -> Result<Self, &'static str> {
         if !backend.is_supported() {
@@ -162,9 +162,6 @@ impl FdrFilter {
         }
         self.backend = backend;
         Ok(self)
-    }
-    pub fn backend(&self) -> Backend {
-        self.backend
     }
     /// Index each bucket's common suffix. Equal suffixes retain all pattern IDs
     /// and are always followed by comparison of the entire original pattern.
@@ -184,74 +181,29 @@ impl FdrFilter {
         }
         self
     }
-    pub fn verification(&self) -> Verification {
-        self.verification
-    }
-    /// Logical payload: suffix bytes and usize IDs. Excludes HashMap capacity,
-    /// control bytes, Vec headers/capacity, allocator overhead and patterns.
-    pub fn verification_table_bytes(&self) -> usize {
-        self.verification_tables
-            .iter()
-            .flat_map(|table| table.iter())
-            .map(|(suffix, ids)| suffix.len() + ids.len() * size_of::<usize>())
-            .sum()
-    }
-    /// Build correlated byte-pair masks, retaining byte masks for end of input.
-    /// The final pattern byte accepts every possible next-byte value.
+    /// Add byte-pair masks; byte-only masks remain for the end of input.
     pub fn with_super_character(mut self, bits: SuperCharacterBits) -> Self {
         self.super_character_bits = bits;
-        self.super_masks.clear();
-        if bits == SuperCharacterBits::Zero || self.buckets.is_empty() {
-            return self;
-        }
-        let variants = 1usize << bits.get();
-        self.super_masks = vec![vec![0; self.initial.len()]; 256 * variants];
-        let q = self.buckets.len();
-        for (b, bucket) in self.buckets.iter().enumerate() {
-            for d in 0..self.effective_lengths[b] {
-                let bit = d * q + b;
-                let flag = 1u64 << (bit % 64);
-                for mask in &mut self.super_masks {
-                    mask[bit / 64] |= flag;
-                }
-                for &id in bucket {
-                    let pattern = &self.patterns.as_slice()[id];
-                    let position = pattern.len() - 1 - d;
-                    let base = (pattern[position] as usize) << bits.get();
-                    if d == 0 {
-                        for next in 0..variants {
-                            self.super_masks[base | next][bit / 64] &= !flag;
-                        }
-                    } else {
-                        let next = pattern[position + 1] as usize & (variants - 1);
-                        self.super_masks[base | next][bit / 64] &= !flag;
-                    }
-                }
-            }
-        }
+        self.super_masks = match bits {
+            SuperCharacterBits::Zero => Vec::new(),
+            _ => self.build_masks(bits.get()),
+        };
         self
     }
-    pub fn super_character_bits(&self) -> SuperCharacterBits {
-        self.super_character_bits
-    }
-    /// Without a next byte, use the byte-only mask, accepting any next byte.
-    pub fn super_character_mask(&self, byte: u8, next: Option<u8>) -> &[u64] {
-        if self.super_masks.is_empty() {
-            return self.mask(byte);
-        }
-        match next {
-            Some(next) => {
-                let bits = self.super_character_bits.get();
-                let index = ((byte as usize) << bits) | (next as usize & ((1 << bits) - 1));
-                &self.super_masks[index]
-            }
-            None => self.mask(byte),
-        }
-    }
-    /// Select batching without rebuilding the buckets or byte masks.
+    /// Select batching without rebuilding the buckets or masks.
     pub fn with_batch_size(mut self, batch_size: BatchSize) -> Self {
         self.batch_size = batch_size;
         self
+    }
+
+    pub fn backend(&self) -> Backend {
+        self.backend
+    }
+    pub fn verification(&self) -> Verification {
+        self.verification
+    }
+    pub fn super_character_bits(&self) -> SuperCharacterBits {
+        self.super_character_bits
     }
     pub fn batch_size(&self) -> BatchSize {
         self.batch_size
@@ -272,137 +224,88 @@ impl FdrFilter {
     pub fn mask_table_bytes(&self) -> usize {
         (self.masks.len() + self.super_masks.len()) * self.initial.len() * 8
     }
+    /// Logical payload: suffix bytes and usize IDs. Excludes HashMap capacity,
+    /// control bytes, Vec headers/capacity, allocator overhead and patterns.
+    pub fn verification_table_bytes(&self) -> usize {
+        self.verification_tables
+            .iter()
+            .flat_map(|table| table.iter())
+            .map(|(suffix, ids)| suffix.len() + ids.len() * size_of::<usize>())
+            .sum()
+    }
     /// Sequential initial state; batching extends it with zero padding.
     pub fn initial_state(&self) -> &[u64] {
         &self.initial
     }
     pub fn mask(&self, byte: u8) -> &[u64] {
-        &self.masks[byte as usize]
+        &self.masks[usize::from(byte)]
+    }
+    /// Without a next byte, use the byte-only mask, accepting any next byte.
+    pub fn super_character_mask(&self, byte: u8, next: Option<u8>) -> &[u64] {
+        match next {
+            Some(next) if !self.super_masks.is_empty() => {
+                let bits = self.super_character_bits.get();
+                let index = (usize::from(byte) << bits) | (usize::from(next) & ((1 << bits) - 1));
+                &self.super_masks[index]
+            }
+            _ => self.mask(byte),
+        }
     }
 
+    /// Reports candidates by end position, then bucket.
     pub fn scan_candidates(&self, input: &[u8], mut report: impl FnMut(Candidate)) {
-        if self.batch_size != BatchSize::One || self.backend != Backend::Integer {
-            self.scan_batched(input, report);
-            return;
-        }
         let q = self.buckets.len();
         if q == 0 {
             return;
         }
-        let mut state = self.initial.clone();
-        for (index, &byte) in input.iter().enumerate() {
-            for (word, &mask) in state
-                .iter_mut()
-                .zip(self.super_character_mask(byte, input.get(index + 1).copied()))
-            {
-                *word |= mask;
-            }
-            for b in 0..q {
-                if state[b / 64] & (1u64 << (b % 64)) == 0 {
-                    report(Candidate {
-                        bucket_id: b,
-                        end: index + 1,
-                    });
-                }
-            }
-            // Ascending writes preserve source words during the right shift.
-            let words = q / 64;
-            let bits = q % 64;
-            for destination in 0..state.len() {
-                let source = destination + words;
-                let mut value = state.get(source).copied().unwrap_or(0) >> bits;
-                if bits != 0 {
-                    value |= state.get(source + 1).copied().unwrap_or(0) << (64 - bits);
-                }
-                state[destination] = value;
-            }
-        }
-    }
-    fn scan_batched(&self, input: &[u8], mut report: impl FnMut(Candidate)) {
-        let q = self.buckets.len();
-        if q == 0 {
-            return;
-        }
+        let batch = self.batch_size.get();
         let mut state = self.initial.clone();
         state.resize(self.word_count(), 0);
-        for (block, bytes) in input.chunks(self.batch_size.get()).enumerate() {
-            // A = R | M[c0] | (M[c1] << q) | ... . Integer and SIMD
-            // accumulate the same masks without per-byte state shifts.
+        for (block, bytes) in input.chunks(batch).enumerate() {
+            let block_start = block * batch;
+            // A = R | M[c0] | (M[c1] << q) | ...
             for (offset, &byte) in bytes.iter().enumerate() {
-                let index = block * self.batch_size.get() + offset;
-                let mask = self.super_character_mask(byte, input.get(index + 1).copied());
+                let next = input.get(block_start + offset + 1).copied();
+                let mask = self.super_character_mask(byte, next);
                 simd::or_shifted(&mut state, mask, offset * q, self.backend);
             }
-            // Row j retains the candidate ending at byte j of this block.
+            // Row j holds the candidates ending at byte j of this block.
             for offset in 0..bytes.len() {
                 for b in 0..q {
                     let bit = offset * q + b;
-                    if state[bit / 64] & (1u64 << (bit % 64)) == 0 {
+                    if state[bit / 64] & (1 << (bit % 64)) == 0 {
                         report(Candidate {
                             bucket_id: b,
-                            end: block * self.batch_size.get() + offset + 1,
+                            end: block_start + offset + 1,
                         });
                     }
                 }
             }
-            let shift = bytes.len() * q;
-            let words = shift / 64;
-            let bits = shift % 64;
-            for destination in 0..state.len() {
-                let source = destination + words;
-                let mut value = state.get(source).copied().unwrap_or(0) >> bits;
-                if bits != 0 {
-                    value |= state.get(source + 1).copied().unwrap_or(0) << (64 - bits);
-                }
-                state[destination] = value;
-            }
+            shift_right(&mut state, bytes.len() * q);
         }
     }
+
     fn search<const STATS: bool>(
         &self,
         input: &[u8],
         mut report: impl FnMut(Match),
     ) -> SearchStats {
         let mut stats = SearchStats::default();
-        self.scan_candidates(input, |candidate| {
-            let mut matched = false;
-            if STATS {
-                stats.candidate_count += 1;
-            }
+        self.scan_candidates(input, |Candidate { bucket_id, end }| {
             let ids = match self.verification {
-                Verification::Exhaustive => &self.buckets[candidate.bucket_id][..],
+                Verification::Exhaustive => &self.buckets[bucket_id][..],
                 Verification::Hash => {
-                    let length = self.effective_lengths[candidate.bucket_id];
-                    // Initial state guarantees end >= common suffix length.
                     if STATS {
                         stats.hash_lookups += 1;
                     }
-                    self.verification_tables[candidate.bucket_id]
-                        .get(&input[candidate.end - length..candidate.end])
+                    // The initial state guarantees end >= the common suffix length.
+                    let length = self.effective_lengths[bucket_id];
+                    self.verification_tables[bucket_id]
+                        .get(&input[end - length..end])
                         .map_or(&[][..], Vec::as_slice)
                 }
             };
-            for &id in ids {
-                let pattern = &self.patterns.as_slice()[id];
-                if pattern.len() > candidate.end {
-                    continue;
-                }
-                if STATS {
-                    stats.full_comparisons += 1;
-                }
-                let start = candidate.end - pattern.len();
-                if input[start..candidate.end] == pattern[..] {
-                    matched = true;
-                    report(Match {
-                        pattern_id: id,
-                        start,
-                        end: candidate.end,
-                    });
-                }
-            }
-            if STATS && !matched {
-                stats.false_positive_candidates += 1;
-            }
+            verify::<STATS>(&self.patterns, ids, input, end, &mut stats, &mut report);
         });
         stats
     }
@@ -415,8 +318,23 @@ impl FdrFilter {
         self.scan(input, |m| matches.push(m));
         matches
     }
+    /// Separate pass so counter updates do not enter timed searches.
     pub fn statistics(&self, input: &[u8]) -> SearchStats {
         self.search::<true>(input, |_| {})
+    }
+}
+
+/// Logical right shift with zero fill. Ascending writes preserve source words.
+fn shift_right(state: &mut [u64], shift: usize) {
+    let words = shift / 64;
+    let bits = shift % 64;
+    for destination in 0..state.len() {
+        let source = destination + words;
+        let mut value = state.get(source).copied().unwrap_or(0) >> bits;
+        if bits != 0 {
+            value |= state.get(source + 1).copied().unwrap_or(0) << (64 - bits);
+        }
+        state[destination] = value;
     }
 }
 

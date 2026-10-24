@@ -3,10 +3,17 @@
 //! Bit 0 is always active (zero); bit j represents a matching prefix of length
 //! j. A u64 therefore holds patterns of 1..=63 bytes, including the start bit.
 
+use thiserror::Error;
+
 use crate::Match;
-pub use crate::errors::InvalidPatternLength;
 
 pub const MAX_PATTERN_LEN: usize = u64::BITS as usize - 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("pattern length {length} is outside 1..={MAX_PATTERN_LEN}")]
+pub struct InvalidPatternLength {
+    pub length: usize,
+}
 
 /// A single pattern, whose matches have pattern ID 0.
 #[derive(Debug)]

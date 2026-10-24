@@ -1,10 +1,10 @@
 //! 128-bit mask accumulation using baseline NEON or SSE2 instructions.
+use clap::ValueEnum;
 use serde::Serialize;
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub enum Backend {
-    #[default]
     Integer,
     Neon,
     Sse2,
@@ -15,17 +15,6 @@ impl Backend {
             Self::Integer => true,
             Self::Neon => cfg!(target_arch = "aarch64"),
             Self::Sse2 => cfg!(target_arch = "x86_64"),
-        }
-    }
-}
-impl std::str::FromStr for Backend {
-    type Err = &'static str;
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "integer" => Ok(Self::Integer),
-            "neon" => Ok(Self::Neon),
-            "sse2" => Ok(Self::Sse2),
-            _ => Err("backend must be integer, neon or sse2"),
         }
     }
 }
