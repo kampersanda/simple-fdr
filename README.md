@@ -245,9 +245,11 @@ python3 experiments/partition.py target/release/simple-fdr > experiments/results
 スループットのグラフ（SVG）を作ります。同じテキスト・単語長の範囲でパターン数だけが異なる設定は
 まとめて、パターン数に対するスループットと候補数の表とグラフも作ります。
 設定ごとの表には計測したすべての構成を載せますが、グラフとパターン数の表は、解説記事で説明する
-手法を順に加えた6構成に絞ります（参照実装、複数パターンShift-OR、Grouping・Truncationを使うFDR、
-＋複数の入力文字をまとめる処理（8バイト）、＋Super Character（4ビット）、＋SIMD）。記事で比較していないGrouping方針と検証方法は、
-それぞれ動的計画法とハッシュ検証に固定します。依存するmatplotlibはスクリプト内のメタデータで指定しており、
+手法を順に加えた5構成に絞ります（参照実装、複数パターンShift-OR、Grouping・Truncationを使うFDR、
+＋複数の入力文字をまとめる処理（8バイト）、＋Super Character（4ビット））。記事と同じく、
+複数の入力文字をまとめる処理はSIMD（NEONまたはSSE2）で実行した結果を使います。
+記事で比較していないGrouping方針と検証方法は、それぞれ動的計画法とハッシュ検証に固定します。
+依存するmatplotlibはスクリプト内のメタデータで指定しており、
 `uv run`が用意します。`experiments/results/`は計測環境に依存するため、リポジトリに含めません。
 `partition.py`は`sherlock-1000-2-16.json`でのGrouping方針ごとの結果と、ランダムに生成した
 パターン集合（100・1,000・10,000個）での構築時間を調べます。
