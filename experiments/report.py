@@ -41,14 +41,14 @@ def table(header, rows):
 
 # The article's techniques, each added to the previous row. Grouping uses the
 # DP partition and verification uses hashing in every FDR row, since the article
-# does not compare those choices. SIMD is whichever backend was measured.
+# does not compare those choices. Multi-character input runs on whichever SIMD
+# backend was measured, as the article presents the two together.
 ARTICLE = [
     ("Naive", None),
     ("Multiple Shift-OR", None),
     ("FDR (Grouping + Truncation)", (0, 1, False)),
-    ("+ Multi-Character Input (8 bytes)", (0, 8, False)),
-    ("+ Super Character (4 bits)", (4, 8, False)),
-    ("+ SIMD", (4, 8, True)),
+    ("+ Multi-Character Input (8 bytes)", (0, 8, True)),
+    ("+ Super Character (4 bits)", (4, 8, True)),
 ]
 
 
