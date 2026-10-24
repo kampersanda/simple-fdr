@@ -1,10 +1,11 @@
-//! Integer sequential and batched forms of the paper's reverse-position mask layout.
+//! Integer and SIMD sequential/batched forms of the paper's reverse-position mask layout.
 //!
 //! Bit d*q+b constrains a candidate ending d bytes in the future in bucket b.
 //! Masks are zero in padding (d >= the bucket's common suffix length).
 //! Before byte 0, the first length-1 bits of each bucket are one, preventing
 //! candidates whose suffix would begin before the input. For each byte:
 //! R |= mask[byte]; report zero bits in row 0; R >>= q (zero fill).
+use crate::simd::{self, Backend};
 use crate::{
     Match, Patterns,
     filter::{Candidate, SearchStats},
@@ -84,6 +85,7 @@ impl std::str::FromStr for SuperCharacterBits {
 
 #[derive(Debug)]
 pub struct FdrFilter {
+    backend: Backend,
     verification: Verification,
     verification_tables: Vec<HashMap<Vec<u8>, Vec<usize>>>,
     patterns: Patterns,
@@ -139,6 +141,7 @@ impl FdrFilter {
             }
         }
         Self {
+            backend: Backend::Integer,
             verification: Verification::Exhaustive,
             verification_tables: Vec::new(),
             patterns,
@@ -151,6 +154,17 @@ impl FdrFilter {
             width,
             batch_size: BatchSize::One,
         }
+    }
+    /// Reject unsupported architectures; layout and candidate extraction stay shared.
+    pub fn with_backend(mut self, backend: Backend) -> Result<Self, &'static str> {
+        if !backend.is_supported() {
+            return Err("requested SIMD backend is unavailable on this architecture");
+        }
+        self.backend = backend;
+        Ok(self)
+    }
+    pub fn backend(&self) -> Backend {
+        self.backend
     }
     /// Index each bucket's common suffix. Equal suffixes retain all pattern IDs
     /// and are always followed by comparison of the entire original pattern.
@@ -267,7 +281,7 @@ impl FdrFilter {
     }
 
     pub fn scan_candidates(&self, input: &[u8], mut report: impl FnMut(Candidate)) {
-        if self.batch_size != BatchSize::One {
+        if self.batch_size != BatchSize::One || self.backend != Backend::Integer {
             self.scan_batched(input, report);
             return;
         }
@@ -312,25 +326,12 @@ impl FdrFilter {
         let mut state = self.initial.clone();
         state.resize(self.word_count(), 0);
         for (block, bytes) in input.chunks(self.batch_size.get()).enumerate() {
-            // A = R | M[c0] | (M[c1] << q) | ... . Each word is
-            // accumulated locally: there is no per-byte state shift dependency.
-            for (destination, word) in state.iter_mut().enumerate() {
-                let mut combined = *word;
-                for (offset, &byte) in bytes.iter().enumerate() {
-                    let shift = offset * q;
-                    let words = shift / 64;
-                    let bits = shift % 64;
-                    if destination >= words {
-                        let source = destination - words;
-                        let index = block * self.batch_size.get() + offset;
-                        let mask = self.super_character_mask(byte, input.get(index + 1).copied());
-                        combined |= mask.get(source).copied().unwrap_or(0) << bits;
-                        if bits != 0 && source > 0 {
-                            combined |= mask.get(source - 1).copied().unwrap_or(0) >> (64 - bits);
-                        }
-                    }
-                }
-                *word = combined;
+            // A = R | M[c0] | (M[c1] << q) | ... . Integer and SIMD
+            // accumulate the same masks without per-byte state shifts.
+            for (offset, &byte) in bytes.iter().enumerate() {
+                let index = block * self.batch_size.get() + offset;
+                let mask = self.super_character_mask(byte, input.get(index + 1).copied());
+                simd::or_shifted(&mut state, mask, offset * q, self.backend);
             }
             // Row j retains the candidate ending at byte j of this block.
             for offset in 0..bytes.len() {
