@@ -31,8 +31,6 @@ report = {
             ),
         }
         for name in [
-            "bytes-8-32.json",
-            "abcd-2-32.json",
             "abcdqrst-2-6.json",
             "sherlock-100-4-16.json",
             "sherlock-1000-2-16.json",
