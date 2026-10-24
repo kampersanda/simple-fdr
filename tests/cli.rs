@@ -133,3 +133,50 @@ fn file_errors_name_the_config_path() {
     assert!(error.contains(config.to_str().unwrap()));
     assert!(!result.exists());
 }
+
+#[test]
+fn multiple_shift_or_saves_width_and_reference_matches() {
+    let directory = tempfile::tempdir().unwrap();
+    for (count, length) in [(3, 4), (100, 16), (65, 1), (0, 1)] {
+        let config_path = directory.path().join(format!("config-{count}.json"));
+        let result_path = directory.path().join(format!("result-{count}.json"));
+        fs::write(
+            &config_path,
+            serde_json::to_vec(&serde_json::json!({
+                "seed": 29, "input_len": 128, "pattern_count": count,
+                "min_pattern_len": length, "max_pattern_len": length,
+                "alphabet": [0, 1, 2, 3]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_simple-fdr"))
+            .arg("run")
+            .arg(&config_path)
+            .arg(&result_path)
+            .args(["--algorithm", "multiple-shift-or"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result: serde_json::Value =
+            serde_json::from_slice(&fs::read(result_path).unwrap()).unwrap();
+        let data =
+            generate(&serde_json::from_slice(&fs::read(config_path).unwrap()).unwrap()).unwrap();
+        let expected = Naive::new(Patterns::new(data.patterns).unwrap()).find_all(&data.input);
+        let width: usize = count * (length + 1);
+        assert_eq!(result["algorithm"], "multiple-shift-or");
+        assert_eq!(result["state_width_bits"], width);
+        assert_eq!(result["state_words"], width.div_ceil(64));
+        assert_eq!(
+            result["max_pattern_len"],
+            if count == 0 { 0 } else { length }
+        );
+        assert_eq!(result["matches"], serde_json::to_value(expected).unwrap());
+        assert!(result["construction_ns"].is_number());
+        assert!(result["search_ns"].is_number());
+    }
+}

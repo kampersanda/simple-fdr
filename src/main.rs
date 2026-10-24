@@ -6,11 +6,12 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use simple_fdr::{
     Match, Patterns,
     generate::{self, Config, Dataset},
+    multiple_shift_or::MultipleShiftOr,
     naive::Naive,
 };
 
@@ -25,8 +26,19 @@ struct Cli {
 enum Command {
     /// Generate a reproducible dataset and save it as JSON.
     Generate(Files),
-    /// Run the reference matcher and save results as JSON.
-    Run(Files),
+    /// Run a matcher and save results as JSON.
+    Run {
+        #[command(flatten)]
+        files: Files,
+        #[arg(long, value_enum, default_value_t = Algorithm::Naive)]
+        algorithm: Algorithm,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Algorithm {
+    Naive,
+    MultipleShiftOr,
 }
 
 #[derive(Args)]
@@ -46,6 +58,11 @@ struct ResultFile<'a> {
     os: &'static str,
     debug_assertions: bool,
     algorithm: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state_width_bits: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state_words: Option<usize>,
+    max_pattern_len: usize,
     config: &'a Config,
     input_len: usize,
     pattern_count: usize,
@@ -59,16 +76,45 @@ struct ResultFile<'a> {
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Generate(files) => write_json(&files.output, &load_dataset(&files.config)?),
-        Command::Run(files) => {
+        Command::Run { files, algorithm } => {
             let dataset = load_dataset(&files.config)?;
             // Generation and output serialization are excluded. This single sample
             // includes collecting matches; it is not a benchmark with repetitions.
             let started = Instant::now();
-            let matcher = Naive::new(Patterns::new(dataset.patterns)?);
-            let construction_ns = started.elapsed().as_nanos();
-            let started = Instant::now();
-            let matches = matcher.find_all(&dataset.input);
-            let search_ns = started.elapsed().as_nanos();
+            let patterns = Patterns::new(dataset.patterns)?;
+            let max_pattern_len = patterns.as_slice().iter().map(Vec::len).max().unwrap_or(0);
+            let (construction_ns, search_ns, mut matches, name, width, words) = match algorithm {
+                Algorithm::Naive => {
+                    let matcher = Naive::new(patterns);
+                    let construction_ns = started.elapsed().as_nanos();
+                    let search = Instant::now();
+                    let matches = matcher.find_all(&dataset.input);
+                    (
+                        construction_ns,
+                        search.elapsed().as_nanos(),
+                        matches,
+                        "naive",
+                        None,
+                        None,
+                    )
+                }
+                Algorithm::MultipleShiftOr => {
+                    let matcher = MultipleShiftOr::new(patterns);
+                    let construction_ns = started.elapsed().as_nanos();
+                    let search = Instant::now();
+                    let matches = matcher.find_all(&dataset.input);
+                    (
+                        construction_ns,
+                        search.elapsed().as_nanos(),
+                        matches,
+                        "multiple-shift-or",
+                        Some(matcher.state_width()),
+                        Some(matcher.word_count()),
+                    )
+                }
+            };
+            // Normalize output order outside the search measurement.
+            matches.sort_unstable();
             let result = ResultFile {
                 format_version: 1,
                 generator_version: dataset.generator_version,
@@ -76,7 +122,10 @@ fn main() -> Result<()> {
                 architecture: env::consts::ARCH,
                 os: env::consts::OS,
                 debug_assertions: cfg!(debug_assertions),
-                algorithm: "naive",
+                algorithm: name,
+                state_width_bits: width,
+                state_words: words,
+                max_pattern_len,
                 config: &dataset.config,
                 input_len: dataset.input.len(),
                 pattern_count: dataset.config.pattern_count,

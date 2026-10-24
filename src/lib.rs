@@ -5,6 +5,7 @@
 
 pub mod errors;
 pub mod generate;
+pub mod multiple_shift_or;
 pub mod naive;
 pub mod shift_or;
 
