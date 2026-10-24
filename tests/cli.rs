@@ -277,3 +277,107 @@ fn zero_filter_parameters_fail_before_creating_output() {
         assert!(!result.exists());
     }
 }
+
+#[test]
+fn fdr_sequential_saves_partitions_lengths_coefficients_and_matches() {
+    use simple_fdr::{
+        fdr_filter::FdrFilter,
+        grouping::{Coefficients, Strategy},
+    };
+    use std::num::NonZeroUsize;
+    let directory = tempfile::tempdir().unwrap();
+    for count in [0, 3, 65] {
+        let config = directory.path().join(format!("fdr-{count}.json"));
+        fs::write(
+            &config,
+            serde_json::to_vec(&serde_json::json!({
+                "seed": 41, "input_len": 128, "pattern_count": count,
+                "min_pattern_len": 1, "max_pattern_len": 16, "alphabet": [0, 1, 2, 3]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let data = generate(&serde_json::from_slice(&fs::read(&config).unwrap()).unwrap()).unwrap();
+        let patterns = Patterns::new(data.patterns).unwrap();
+        let expected = Naive::new(patterns.clone()).find_all(&data.input);
+        for (name, strategy) in [
+            ("balanced", Strategy::Balanced),
+            ("length-sorted", Strategy::LengthSorted),
+            ("dynamic-programming", Strategy::DynamicProgramming),
+        ] {
+            let output_path = directory.path().join(format!("{name}-{count}.json"));
+            let output = Command::new(env!("CARGO_BIN_EXE_simple-fdr"))
+                .arg("run")
+                .arg(&config)
+                .arg(&output_path)
+                .args([
+                    "--algorithm",
+                    "fdr-sequential",
+                    "--bucket-count",
+                    "2",
+                    "--filter-length",
+                    "8",
+                    "--grouping-strategy",
+                    name,
+                    "--alpha",
+                    "1.2",
+                    "--beta",
+                    "2",
+                ])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let result: serde_json::Value =
+                serde_json::from_slice(&fs::read(&output_path).unwrap()).unwrap();
+            let filter = FdrFilter::new(
+                patterns.clone(),
+                NonZeroUsize::new(2).unwrap(),
+                NonZeroUsize::new(8).unwrap(),
+                strategy,
+                Coefficients::new(1.2, 2.0).unwrap(),
+            );
+            assert_eq!(result["matches"], serde_json::to_value(&expected).unwrap());
+            assert_eq!(result["state_width_bits"], filter.state_width());
+            assert_eq!(result["state_words"], filter.word_count());
+            let saved = &result["fdr_filter"];
+            assert_eq!(saved["requested_bucket_count"], 2);
+            assert_eq!(saved["filter_length"], 8);
+            assert_eq!(saved["grouping_strategy"], name);
+            assert_eq!(saved["coefficients"]["alpha"], 1.2);
+            assert_eq!(saved["coefficients"]["beta"], 2.0);
+            assert_eq!(
+                saved["buckets"],
+                serde_json::to_value(filter.buckets()).unwrap()
+            );
+            assert_eq!(
+                saved["effective_lengths"],
+                serde_json::to_value(filter.effective_lengths()).unwrap()
+            );
+            assert_eq!(saved["mask_table_bytes"], filter.mask_table_bytes());
+            let stats = filter.statistics(&data.input);
+            assert_eq!(saved["candidate_count"], stats.candidate_count);
+            assert_eq!(saved["full_comparisons"], stats.full_comparisons);
+            assert_eq!(
+                saved["false_positive_candidates"],
+                stats.false_positive_candidates
+            );
+            assert!(result["construction_ns"].is_number());
+        }
+    }
+    for (flag, value) in [("--alpha", "0"), ("--alpha", "NaN"), ("--beta", "inf")] {
+        let result = directory.path().join("invalid-fdr.json");
+        let output = Command::new(env!("CARGO_BIN_EXE_simple-fdr"))
+            .args(["run", "unused"])
+            .arg(&result)
+            .args(["--algorithm", "fdr-sequential", flag, value])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("alpha must be finite"));
+        assert!(!result.exists());
+    }
+}

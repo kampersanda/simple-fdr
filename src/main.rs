@@ -11,8 +11,10 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use simple_fdr::{
     Match, Patterns,
+    fdr_filter::FdrFilter,
     filter::{Filter, SearchStats},
     generate::{self, Config, Dataset},
+    grouping::{Coefficients, Strategy},
     multiple_shift_or::MultipleShiftOr,
     naive::Naive,
 };
@@ -34,12 +36,19 @@ enum Command {
         files: Files,
         #[arg(long, value_enum, default_value_t = Algorithm::Naive)]
         algorithm: Algorithm,
-        /// Maximum number of balanced consecutive-ID buckets (grouping modes).
+        /// Maximum number of buckets (grouping modes and fdr-sequential).
         #[arg(long, default_value = "2")]
         bucket_count: NonZeroUsize,
-        /// Maximum per-pattern suffix length (truncation modes).
+        /// Maximum suffix length (truncation modes and fdr-sequential).
         #[arg(long, default_value = "2")]
         filter_length: NonZeroUsize,
+        /// Bucket partition for the FDR sequential filter.
+        #[arg(long, value_enum, default_value_t = GroupingStrategy::DynamicProgramming)]
+        grouping_strategy: GroupingStrategy,
+        #[arg(long, default_value = "1.05")]
+        alpha: f64,
+        #[arg(long, default_value = "3")]
+        beta: f64,
     },
 }
 
@@ -50,6 +59,24 @@ enum Algorithm {
     Grouping,
     Truncation,
     GroupingTruncation,
+    FdrSequential,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum GroupingStrategy {
+    Balanced,
+    LengthSorted,
+    DynamicProgramming,
+}
+
+impl From<GroupingStrategy> for Strategy {
+    fn from(value: GroupingStrategy) -> Self {
+        match value {
+            GroupingStrategy::Balanced => Self::Balanced,
+            GroupingStrategy::LengthSorted => Self::LengthSorted,
+            GroupingStrategy::DynamicProgramming => Self::DynamicProgramming,
+        }
+    }
 }
 
 #[derive(Args)]
@@ -75,6 +102,8 @@ struct ResultFile<'a> {
     state_words: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     filter: Option<FilterResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fdr_filter: Option<FdrFilterResult>,
     max_pattern_len: usize,
     config: &'a Config,
     input_len: usize,
@@ -96,6 +125,19 @@ struct FilterResult {
     statistics: SearchStats,
 }
 
+#[derive(Serialize)]
+struct FdrFilterResult {
+    requested_bucket_count: usize,
+    filter_length: usize,
+    grouping_strategy: Strategy,
+    coefficients: Coefficients,
+    buckets: Vec<Vec<usize>>,
+    effective_lengths: Vec<usize>,
+    mask_table_bytes: usize,
+    #[serde(flatten)]
+    statistics: SearchStats,
+}
+
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Generate(files) => write_json(&files.output, &load_dataset(&files.config)?),
@@ -104,7 +146,11 @@ fn main() -> Result<()> {
             algorithm,
             bucket_count,
             filter_length,
+            grouping_strategy,
+            alpha,
+            beta,
         } => {
+            let coefficients = Coefficients::new(alpha, beta)?;
             let dataset = load_dataset(&files.config)?;
             // Generation and output serialization are excluded. This single sample
             // includes collecting matches; it is not a benchmark with repetitions.
@@ -112,6 +158,7 @@ fn main() -> Result<()> {
             let patterns = Patterns::new(dataset.patterns)?;
             let max_pattern_len = patterns.as_slice().iter().map(Vec::len).max().unwrap_or(0);
             let mut filter_result = None;
+            let mut fdr_filter_result = None;
             let (construction_ns, search_ns, mut matches, name, width, words) = match algorithm {
                 Algorithm::Naive => {
                     let matcher = Naive::new(patterns);
@@ -158,6 +205,38 @@ fn main() -> Result<()> {
                         Some(matcher.word_count()),
                     )
                 }
+                Algorithm::FdrSequential => {
+                    let strategy = grouping_strategy.into();
+                    let matcher = FdrFilter::new(
+                        patterns,
+                        bucket_count,
+                        filter_length,
+                        strategy,
+                        coefficients,
+                    );
+                    let construction_ns = started.elapsed().as_nanos();
+                    let search = Instant::now();
+                    let matches = matcher.find_all(&dataset.input);
+                    let search_ns = search.elapsed().as_nanos();
+                    fdr_filter_result = Some(FdrFilterResult {
+                        requested_bucket_count: bucket_count.get(),
+                        filter_length: filter_length.get(),
+                        grouping_strategy: strategy,
+                        coefficients,
+                        buckets: matcher.buckets().to_vec(),
+                        effective_lengths: matcher.effective_lengths().to_vec(),
+                        mask_table_bytes: matcher.mask_table_bytes(),
+                        statistics: matcher.statistics(&dataset.input),
+                    });
+                    (
+                        construction_ns,
+                        search_ns,
+                        matches,
+                        "fdr-sequential",
+                        Some(matcher.state_width()),
+                        Some(matcher.word_count()),
+                    )
+                }
                 Algorithm::MultipleShiftOr => {
                     let matcher = MultipleShiftOr::new(patterns);
                     let construction_ns = started.elapsed().as_nanos();
@@ -186,6 +265,7 @@ fn main() -> Result<()> {
                 state_width_bits: width,
                 state_words: words,
                 filter: filter_result,
+                fdr_filter: fdr_filter_result,
                 max_pattern_len,
                 config: &dataset.config,
                 input_len: dataset.input.len(),
