@@ -6,8 +6,10 @@
 pub mod errors;
 pub mod filter;
 pub mod generate;
+pub mod grouping;
 pub mod multiple_shift_or;
 pub mod naive;
+pub mod paper_filter;
 pub mod shift_or;
 
 pub use errors::EmptyPattern;
