@@ -1,7 +1,7 @@
 # simple-fdr
 
 FDRの解説記事に対応する、Rustによる複数パターン検索の実験用実装です。
-現在は開発計画の段階2まで実装しています。
+現在は開発計画の段階3まで実装しています。
 
 ## 段階0の内容
 
@@ -129,13 +129,86 @@ cargo run --locked --release -- run experiments/stage2.json /tmp/fdr-stage2-naiv
 `experiments/stage2.json`は長さ16の100パターンを生成するため、状態は1,700ビット、27ワードです。
 `pattern_count`と長さの範囲を変えた設定を保存すれば、状態幅と検索コストを比較できます。
 結果JSONには`max_pattern_len`、`state_width_bits`、`state_words`、構築・検索時間を保存します。
-`state_width_bits`と`state_words`は複数パターンShift-ORを選んだときだけ出力します。
+`state_width_bits`と`state_words`は複数パターンShift-ORと段階3のフィルタで出力します。
 CLIの一致結果はどちらの方式もID、開始位置の順にそろえ、ソートは検索時間に含めません。
 
 状態更新のコストは入力1バイトにつき使用ワード数に比例し、受理判定にはq個のビットを調べます。
 マスク表のワードデータは `256 * state_words * 8` バイトです（Vec等の管理領域を除く）。
 検索時間には状態配列の初期化、受理判定、一致配列の確保・格納が含まれます。
 時間は単発の動作確認値で、安定した性能比較のための反復測定は後続の段階で追加します。
+
+## 段階3：GroupingとTruncation
+
+`filter::Filter`は、候補を抽出した後、バケット内の元パターンをすべて列挙して完全比較します。
+Groupingは位置ごとの文字クラスを共有し、Truncationは各パターンの末尾をフィルタに使います。
+長さが異なるパターンをまとめた場合は、各フィルタ長に受理位置を設けます。
+開始状態と複数ワードの更新は段階2と共通です。段階4の共通末尾長・末尾から数える配置は使いません。
+
+バケット数は1以上を指定し、パターン数を上限とします。ID順に連続するパターンをなるべく均等に
+分け、余りは先頭のバケットから1個ずつ配ります。3パターン・2バケットなら `[0, 1]` と `[2]` です。
+これは比較用の単純な振り分けです。Grouping方針の最適化は段階4で扱います。
+空集合ではバケット数・状態幅とも0です。
+
+| CLI方式 | バケット | フィルタに使う部分 |
+|---|---|---|
+| `grouping` | `--bucket-count`（既定2） | パターン全体 |
+| `truncation` | 1パターンにつき1バケット | 各パターンの末尾、最大 `--filter-length` バイト（既定2） |
+| `grouping-truncation` | `--bucket-count`（既定2） | 各パターンの末尾、最大 `--filter-length` バイト（既定2） |
+
+適用しない方式のオプションは使いません。フィルタ長も1以上を指定し、短いパターンは全体を使います。
+ライブラリでは `Filter::new(patterns, bucket_count, filter_length)` に `NonZeroUsize` の
+バケット数と `Option<NonZeroUsize>` の末尾長を渡します。`None`なら切り詰めません。
+Truncationのみならパターン数以上のバケット数を渡します。
+
+状態幅は、実際のバケット数と「全バケット中の最大フィルタ長に1を足した値」の積です。
+バケットごとの短い列にはダミー状態を置きます。記事の `abcd`、`ad`、`bc` では、
+段階2が15ビット、Groupingのみが10ビット、Truncationのみ（末尾2文字）が9ビット、
+組合せが6ビットです。Groupingのみは `ab` や `adcd`、Truncationのみは `acd` の
+末尾 `cd` を候補として受理しますが、元パターンとの検証によって偽陽性を除外します。
+
+```sh
+cargo run --locked --example filter
+cargo run --locked --release -- run experiments/stage3.json /tmp/fdr-stage3-naive.json --algorithm naive
+cargo run --locked --release -- run experiments/stage3.json /tmp/fdr-stage3-multiple.json --algorithm multiple-shift-or
+cargo run --locked --release -- run experiments/stage3.json /tmp/fdr-stage3-grouping.json --algorithm grouping --bucket-count 8
+cargo run --locked --release -- run experiments/stage3.json /tmp/fdr-stage3-truncation.json --algorithm truncation --filter-length 4
+cargo run --locked --release -- run experiments/stage3.json /tmp/fdr-stage3-combined.json --algorithm grouping-truncation --bucket-count 8 --filter-length 4
+```
+
+`scan_candidates`でバケットIDと終了位置を取得できます。同じ終了位置で複数の受理位置が
+活性化しても、そのバケットの候補イベントは1回です。`scan`と`find_all`は検証済みの
+全一致を終了位置、IDの順に返し、重複内容の別IDも残します。
+
+結果JSONの `filter` に次を保存します。
+
+- `requested_bucket_count`、`filter_length`：その方式で使った構築設定。
+- `buckets`：実際のバケットごとのパターンID。
+- `accepting_lengths`：バケットごとの受理位置に対応するフィルタ長。
+- `candidate_count`：バケットと終了位置の組の数。
+- `full_comparisons`：元パターンと入力区間を比較した回数。終了位置より長いパターンは比較せず、数えません。
+- `false_positive_candidates`：検証で一致を一つも含まなかった候補数。一致数を候補数から引いて求めません。
+
+`statistics(input)`は別の走査で収集し、CLIの `search_ns` にカウンタ更新の負荷を含めません。
+マスク表のワードデータは段階2と同じく `256 * state_words * 8` バイトです。
+状態更新は入力1バイトあたり使用ワード数に比例し、受理判定は各バケットの異なるフィルタ長の数、
+検証は候補バケット内のパターン数に依存します。短いフィルタや大きいバケットで候補が増えると、
+状態幅が縮んでも検証時間が増えることがあります。対応範囲はメモリと `usize` の状態幅に依存します。
+時間は引き続き単発サンプルで、性能向上を保証する測定ではありません。
+
+上の `experiments/stage3.json`、バケット数8、フィルタ長4で得た比較です。
+全5方式の一致結果は同じ2,884件でした。以下の幅と件数は時間計測に依存しません。
+
+| 方式 | 状態幅（ビット） | 候補イベント | 完全比較 | 一致なしの候補 |
+|---|---:|---:|---:|---:|
+| 複数パターンShift-OR | 1,700 | — | — | — |
+| Grouping | 136 | 515,002 | 6,438,008 | 512,118 |
+| Truncation | 500 | 25,777 | 25,776 | 22,893 |
+| Grouping + Truncation | 40 | 491,488 | 6,143,094 | 488,604 |
+
+この設定は4文字のアルファベットに100パターンを生成します。Groupingすると文字クラスが
+大きくなり、多くの入力区間が候補に残るため、幅の削減がそのまま検索の高速化にはつながりません。
+Truncationの完全比較が候補より1回少ないのは、入力先頭付近で元パターン長に足りない候補を
+長さだけで除外したためです。
 
 ## 生成設定
 
@@ -167,7 +240,8 @@ CLIの一致結果はどちらの方式もID、開始位置の順にそろえ、
 ## 実験結果
 
 `run`は設定からデータを再生成し、選択した検索方式による結果を保存します。
-`--algorithm naive`（既定値）または`--algorithm multiple-shift-or`を選べます。
+`--algorithm`で`naive`（既定値）、`multiple-shift-or`、`grouping`、`truncation`、
+`grouping-truncation`を選べます。
 出力には形式・生成器・パッケージのversion、OS・アーキテクチャ、debug assertionsの有無、
 設定、入力長、パターン数、構築・検索時間（ナノ秒）、全一致、埋め込んだ一致が含まれます。
 
@@ -175,7 +249,7 @@ CLIの一致結果はどちらの方式もID、開始位置の順にそろえ、
 データ生成、ファイル読み込み、JSON保存は含みません。構築時間はパターン検査、最長長の取得、選択した検索方式の
 作成にかかる時間です。ウォームアップ・反復計測やCPUの詳細記録は今後追加します。
 
-FDRのフィルタ、SIMD、実ファイルを読み込むCLIは後続の段階で実装します。
+原著型のフィルタ配置、SIMD、実ファイルを読み込むCLIは後続の段階で実装します。
 
 ## 使用するライブラリ
 
@@ -205,3 +279,7 @@ cargo clippy --locked --all-targets -- -D warnings
 長さ63・64・65を含むワード境界、全256バイト、重複・包含・重なり、空集合を検証します。
 固定seedで長さの異なるパターンを生成し、一致を埋め込んだ入力で参照実装と差分比較します。
 CLIの結果と状態幅の保存も確認します。
+
+段階3では記事の偽陽性の除去、異なる受理位置の候補イベントの重複排除、完全比較回数、
+全256バイト、長さ63・64・65、バケット数63・64・65や127・128・129のワード境界を検証します。
+固定seedによる混在長・埋め込み一致の参照比較と、全3方式のCLI設定・統計の保存も確認します。
