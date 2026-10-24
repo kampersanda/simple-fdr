@@ -8,7 +8,8 @@
 Run: uv run experiments/report.py BENCH.json OUTPUT_DIR
 Writes OUTPUT_DIR/results.md, one techniques-<case>.svg per case, and one
 scaling-<text>-<min>-<max>.svg per series of word datasets differing only in
-pattern count.
+pattern count. The tables list every measured configuration; the charts and the
+scaling table keep only the techniques explained in the article (see ARTICLE).
 """
 
 import json
@@ -36,6 +37,39 @@ def table(header, rows):
     )
     lines += ["| " + " | ".join(str(cell) for cell in row) + " |" for row in rows]
     return lines
+
+
+# The article's techniques, each added to the previous row. Grouping uses the
+# DP partition and verification uses hashing in every FDR row, since the article
+# does not compare those choices. SIMD is whichever backend was measured.
+ARTICLE = [
+    ("Naive", None),
+    ("Multiple Shift-OR", None),
+    ("FDR (Grouping + Truncation)", (0, 1, False)),
+    ("+ Multi-Character Input (8 bytes)", (0, 8, False)),
+    ("+ Super Character (4 bits)", (4, 8, False)),
+    ("+ SIMD", (4, 8, True)),
+]
+
+
+def article(case):
+    """Return (label, entry) pairs for the ARTICLE rows."""
+    techniques = {entry["name"]: entry for entry in case["techniques"]}
+    rows = [
+        (ARTICLE[0][0], techniques["naive"]),
+        (ARTICLE[1][0], techniques["multiple-shift-or"]),
+    ]
+    for label, (bits, batch, simd) in ARTICLE[2:]:
+        (entry,) = [
+            entry
+            for entry in case["comparison"]
+            if entry["super_character_bits"] == bits
+            and entry["batch_size"] == batch
+            and entry["verification"] == "hash"
+            and (entry["backend"] != "integer") == simd
+        ]
+        rows.append((label, entry))
+    return rows
 
 
 def stat(entry, key):
@@ -104,8 +138,8 @@ for case in report["cases"]:
     )
     lines.append("")
 
-    names = [entry["name"] for entry in case["techniques"]]
-    speeds = [mib_per_second(case, entry) for entry in case["techniques"]]
+    names = [label for label, _ in article(case)]
+    speeds = [mib_per_second(case, entry) for _, entry in article(case)]
     figure, axis = plt.subplots(figsize=(7, 0.35 * len(names) + 1))
     axis.barh(names[::-1], speeds[::-1], color="#4c72b0")
     axis.set_xscale("log")
@@ -123,8 +157,6 @@ for case in report["cases"]:
     if "text" in config:
         key = (config["text"], config["min_pattern_len"], config["max_pattern_len"])
         series.setdefault(key, []).append(case)
-plotted = ["naive", "multiple-shift-or", "fdr-sequential"]
-plotted += ["fdr-super-character-4", "fdr-hash", "fdr-all"]
 for (text, low, high), cases in series.items():
     if len(cases) < 2:
         continue
@@ -134,14 +166,17 @@ for (text, low, high), cases in series.items():
     lines += [
         f"## パターン数による変化（{name}）",
         "",
-        f"`{text}` から長さ{low}〜{high}の単語を選んだ設定。値はMiB/s（括弧内は候補数）。",
+        (
+            f"`{text}` から長さ{low}〜{high}の単語を選んだ設定。値はMiB/s（括弧内は候補数）。"
+            "記事の手法を上から順に加えたもので、FDRは動的計画法による分割とハッシュ検証に固定。"
+        ),
         "",
     ]
     rows = []
-    for i, entry in enumerate(cases[0]["techniques"]):
-        row = [entry["name"]]
+    for i, (label, _) in enumerate(ARTICLE):
+        row = [label]
         for case in cases:
-            other = case["techniques"][i]
+            other = article(case)[i][1]
             cell = f"{mib_per_second(case, other):,.1f}"
             if "statistics" in other:
                 cell += f"（{other['statistics']['candidate_count']:,}）"
@@ -156,14 +191,9 @@ for (text, low, high), cases in series.items():
     ]
 
     figure, axis = plt.subplots(figsize=(7, 4.5))
-    for technique in plotted:
-        speeds = [
-            mib_per_second(case, entry)
-            for case in cases
-            for entry in case["techniques"]
-            if entry["name"] == technique
-        ]
-        axis.plot(counts, speeds, marker="o", label=technique)
+    for i, (label, _) in enumerate(ARTICLE):
+        speeds = [mib_per_second(case, article(case)[i][1]) for case in cases]
+        axis.plot(counts, speeds, marker="o", label=label)
     axis.set_xscale("log")
     axis.set_yscale("log")
     axis.set_xlabel("pattern count (log scale)")
