@@ -2,7 +2,7 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use simple_fdr::{
     Patterns,
-    fdr_filter::FdrFilter,
+    fdr_filter::{BatchSize, FdrFilter},
     filter::{Candidate, SearchStats},
     grouping::{Coefficients, Strategy, partition},
     naive::Naive,
@@ -57,6 +57,37 @@ fn compare(bytes: Vec<Vec<u8>>, input: &[u8], q: usize, length: usize, strategy:
     filter.scan_candidates(input, |c| actual.push(c));
     assert_eq!(actual, candidates);
     assert_eq!(filter.statistics(input).candidate_count, candidates.len());
+    let statistics = filter.statistics(input);
+    for size in [
+        BatchSize::One,
+        BatchSize::Two,
+        BatchSize::Four,
+        BatchSize::Eight,
+    ] {
+        let batched = FdrFilter::new(
+            patterns.clone(),
+            nz(q),
+            nz(length),
+            strategy,
+            Coefficients::default(),
+        )
+        .with_batch_size(size);
+        let mut actual = Vec::new();
+        batched.scan_candidates(input, |c| actual.push(c));
+        assert_eq!(actual, candidates, "batch={size:?}");
+        let mut matches = batched.find_all(input);
+        let mut scanned = Vec::new();
+        batched.scan(input, |m| scanned.push(m));
+        assert_eq!(matches, scanned);
+        matches.sort_unstable();
+        assert_eq!(matches, expected, "batch={size:?}");
+        assert_eq!(batched.statistics(input), statistics);
+        assert_eq!(batched.mask_table_bytes(), filter.mask_table_bytes());
+        assert_eq!(
+            batched.state_width(),
+            filter.state_width() + filter.buckets().len() * (size.get() - 1)
+        );
+    }
 }
 
 #[test]
@@ -305,4 +336,45 @@ fn statistics_count_events_separately_from_matches_and_skip_short_prefixes() {
             false_positive_candidates: 1,
         }
     );
+}
+
+#[test]
+fn every_block_position_tail_and_crossing_match() {
+    // All end positions, all tail lengths, including matches shorter/longer
+    // than a block and the mixed-length bucket from the development plan.
+    for input_len in 0..=33 {
+        for start in 0..input_len {
+            for pattern in [b"a".as_slice(), b"ab", b"acd", b"abcdefghijk"] {
+                let mut input = vec![b'x'; input_len];
+                if start + pattern.len() <= input_len {
+                    input[start..start + pattern.len()].copy_from_slice(pattern);
+                }
+                compare(
+                    vec![b"ab".to_vec(), b"acd".to_vec(), pattern.to_vec()],
+                    &input,
+                    1,
+                    16,
+                    Strategy::Balanced,
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn eight_buckets_eight_rows_eight_bytes_span_120_bits() {
+    let patterns = Patterns::new(vec![b"abcdefgh".to_vec(); 8]).unwrap();
+    let filter = FdrFilter::new(
+        patterns,
+        nz(8),
+        nz(8),
+        Strategy::Balanced,
+        Coefficients::default(),
+    )
+    .with_batch_size(BatchSize::Eight);
+    assert_eq!(filter.state_width(), 120);
+    assert_eq!(filter.word_count(), 2);
+    assert_eq!(filter.mask_table_bytes(), 2048); // Original 64-bit byte masks.
+    assert_eq!(filter.initial_state(), &[0x00ff_ffff_ffff_ffff]);
+    assert_eq!(filter.batch_size(), BatchSize::Eight);
 }
