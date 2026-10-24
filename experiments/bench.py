@@ -24,8 +24,19 @@ report = {
     "rust": subprocess.check_output(["rustc", "--version"], text=True).strip(),
     "build": "Cargo default release profile; no custom RUSTFLAGS",
     "cases": [
-        json.loads(subprocess.check_output([str(binary), str(root / name)], text=True))
-        for name in ["bytes-8-32.json", "abcd-2-32.json", "abcdqrst-2-6.json"]
+        {
+            "name": name,
+            **json.loads(
+                subprocess.check_output([str(binary), str(root / name)], text=True)
+            ),
+        }
+        for name in [
+            "bytes-8-32.json",
+            "abcd-2-32.json",
+            "abcdqrst-2-6.json",
+            "sherlock-100-4-16.json",
+            "sherlock-1000-2-16.json",
+        ]
     ],
 }
 print(json.dumps(report, indent=2))

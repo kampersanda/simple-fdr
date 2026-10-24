@@ -1,6 +1,6 @@
 use simple_fdr::{
     Match, Patterns,
-    generate::{Config, Insertion, generate},
+    generate::{Config, Insertion, WordsConfig, generate, sample_words},
     naive::Naive,
 };
 
@@ -123,4 +123,42 @@ fn supports_empty_workloads_and_default_full_byte_alphabet() {
     assert!(data.input.is_empty());
     assert!(data.patterns.is_empty());
     assert!(data.planted_matches.is_empty());
+}
+
+fn words_config(pattern_count: usize) -> WordsConfig {
+    WordsConfig {
+        seed: 7,
+        text: "unused".into(),
+        pattern_count,
+        min_pattern_len: 2,
+        max_pattern_len: 3,
+    }
+}
+
+const TEXT: &[u8] = b"A cat's hat, the CAT and the dog-cat.\r\nx 42 abcd";
+
+#[test]
+fn samples_distinct_words_in_the_length_range_reproducibly() {
+    let data = sample_words(&words_config(6), TEXT.to_vec()).unwrap();
+    assert_eq!(data.input, TEXT);
+    assert!(data.planted_matches.is_empty());
+    let mut words = data.patterns.clone();
+    words.sort();
+    let expected: Vec<&[u8]> = vec![b"CAT", b"and", b"cat", b"dog", b"hat", b"the"];
+    assert_eq!(words, expected);
+    assert_eq!(data, sample_words(&words_config(6), TEXT.to_vec()).unwrap());
+
+    let fewer = sample_words(&words_config(3), TEXT.to_vec()).unwrap();
+    assert_eq!(fewer.patterns.len(), 3);
+    assert!(fewer.patterns.iter().all(|p| words.contains(p)));
+}
+
+#[test]
+fn rejects_invalid_word_settings() {
+    assert!(sample_words(&words_config(7), TEXT.to_vec()).is_err());
+    let mut invalid = words_config(1);
+    invalid.min_pattern_len = 0;
+    assert!(sample_words(&invalid, TEXT.to_vec()).is_err());
+    invalid.min_pattern_len = 4;
+    assert!(sample_words(&invalid, TEXT.to_vec()).is_err());
 }

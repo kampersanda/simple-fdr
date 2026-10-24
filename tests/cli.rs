@@ -6,7 +6,7 @@ use std::{
 
 use simple_fdr::{
     Patterns,
-    generate::{Dataset, generate},
+    generate::{Dataset, DatasetConfig, generate},
     naive::Naive,
 };
 
@@ -46,7 +46,7 @@ fn saves_reproducible_data_and_complete_experiment_results() {
     let output = cli("generate", &config, &dataset_path);
     assert_success(&output);
     let data: Dataset = read_json(&dataset_path);
-    assert_eq!(data, generate(&data.config).unwrap());
+    assert_eq!(data, data.config.build(Path::new("")).unwrap());
 
     let output = cli("run", &config, &result_path);
     assert_success(&output);
@@ -557,4 +557,38 @@ fn simd_backend_is_recorded_and_unsupported_backend_fails() {
             assert!(!path.exists());
         }
     }
+}
+
+#[test]
+fn words_config_reads_text_relative_to_the_config() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(
+        directory.path().join("text.txt"),
+        "the cat sat; the dog ran",
+    )
+    .unwrap();
+    let config = directory.path().join("config.json");
+    fs::write(
+        &config,
+        r#"{
+        "seed": 3, "text": "text.txt", "pattern_count": 2,
+        "min_pattern_len": 3, "max_pattern_len": 3
+    }"#,
+    )
+    .unwrap();
+    let result_path = directory.path().join("result.json");
+    assert_success(&cli("run", &config, &result_path));
+    let result: serde_json::Value = read_json(&result_path);
+    let data = read_json::<DatasetConfig>(&config)
+        .build(directory.path())
+        .unwrap();
+    let expected = Naive::new(Patterns::new(data.patterns).unwrap()).find_all(&data.input);
+    assert_eq!(result["config"]["text"], "text.txt");
+    assert_eq!(result["pattern_count"], 2);
+    assert_eq!(result["input_len"], 24);
+    assert_eq!(result["matches"], serde_json::to_value(expected).unwrap());
+
+    fs::remove_file(directory.path().join("text.txt")).unwrap();
+    let output = cli("run", &config, &directory.path().join("missing.json"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("failed to read text"));
 }

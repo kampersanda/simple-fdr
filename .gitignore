@@ -27,3 +27,4 @@ chapters/
 
 # Local experiment measurements
 experiments/*-results.json
+experiments/results/

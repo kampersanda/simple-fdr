@@ -13,7 +13,7 @@ use simple_fdr::{
     Match, Patterns,
     fdr_filter::{BatchSize, FdrFilter, SuperCharacterBits, Verification},
     filter::{Filter, SearchStats},
-    generate::{self, Config, Dataset},
+    generate::{Dataset, DatasetConfig},
     grouping::{Coefficients, Strategy},
     multiple_shift_or::MultipleShiftOr,
     naive::Naive,
@@ -103,7 +103,7 @@ struct ResultFile<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     fdr_filter: Option<FdrFilterResult>,
     max_pattern_len: usize,
-    config: &'a Config,
+    config: &'a DatasetConfig,
     input_len: usize,
     pattern_count: usize,
     construction_ns: u128,
@@ -164,6 +164,7 @@ fn main() -> Result<()> {
             // includes collecting matches; it is not a benchmark with repetitions.
             let started = Instant::now();
             let patterns = Patterns::new(dataset.patterns)?;
+            let pattern_count = patterns.as_slice().len();
             let max_pattern_len = patterns.as_slice().iter().map(Vec::len).max().unwrap_or(0);
             let (mut construction_ns, mut search_ns) = (0, 0);
             let mut timed = |find_all: &dyn Fn() -> Vec<Match>| {
@@ -258,7 +259,7 @@ fn main() -> Result<()> {
                 max_pattern_len,
                 config: &dataset.config,
                 input_len: input.len(),
-                pattern_count: dataset.config.pattern_count,
+                pattern_count,
                 construction_ns,
                 search_ns,
                 match_count: matches.len(),
@@ -273,9 +274,9 @@ fn main() -> Result<()> {
 fn load_dataset(path: &Path) -> Result<Dataset> {
     let bytes =
         fs::read(path).with_context(|| format!("failed to read config {}", path.display()))?;
-    let config = serde_json::from_slice(&bytes)
+    let config: DatasetConfig = serde_json::from_slice(&bytes)
         .with_context(|| format!("failed to parse config {}", path.display()))?;
-    Ok(generate::generate(&config)?)
+    Ok(config.build(path.parent().unwrap_or(Path::new("")))?)
 }
 
 fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {

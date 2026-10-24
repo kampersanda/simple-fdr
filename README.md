@@ -202,28 +202,64 @@ cargo run --locked --release -- run experiments/abcdqrst-2-6.json /tmp/fdr.json 
 埋め込みの重なり、存在しないID、入力範囲外の指定はエラーです。
 `planted_matches`は確実に存在する一致で、全一致の一覧ではありません。
 
+### 実テキストからの単語抽出
+
+`text` を持つ設定は、テキストファイル全体を入力とし、そこから抜き出した単語をパターンにします。
+
+| フィールド | 意味 |
+|---|---|
+| `seed` | 64ビット整数のseed |
+| `text` | テキストファイル。相対パスは設定ファイルのディレクトリを基準にする |
+| `pattern_count` | パターン数 |
+| `min_pattern_len`, `max_pattern_len` | 単語長の範囲。両端を含む |
+
+単語はASCII英字の最長の連続で、大文字・小文字を区別します。長さが範囲内の異なり語を
+辞書順に並べ、ChaCha8と`rand::seq::index::sample`で重複なく選びます。
+パターンIDは選んだ順です。単語は他の単語の一部にも一致するため（`the`と`there`など）、
+一致は参照実装で数えます。`planted_matches`は空です。
+
+`data/sherlock.txt`（Project Gutenberg、『The Adventures of Sherlock Holmes』、594,915バイト、
+CRLF改行のASCII）は、異なり語が8,788語です。
+
 ## 実験
 
 ```sh
 cargo build --locked --release --example bench
-python3 experiments/bench.py target/release/examples/bench > /tmp/fdr-bench.json
+mkdir -p experiments/results
+python3 experiments/bench.py target/release/examples/bench > experiments/results/bench.json
+uv run experiments/report.py experiments/results/bench.json experiments/results
 cargo build --locked --release
-python3 experiments/partition.py target/release/simple-fdr > /tmp/fdr-partition.json
+python3 experiments/partition.py target/release/simple-fdr > experiments/results/partition.json
 ```
 
-`bench`は追加ビット数・一括処理長・検証方法・利用可能なバックエンドの全組合せについて、
-参照実装との一致と候補列の一致を確認してから、3回のウォームアップ後に9回計測し中央値を求めます。
-各一致は`black_box`に渡して数えるだけで、構築・統計収集・正解照合は計測に含めません。
+`bench`は設定ごとに二種類の計測をします。いずれもバケット数8、指定フィルタ長8です。
+
+- `techniques`：各技法を個別に評価します。参照実装、複数パターンShift-OR、説明用モデルの
+  Grouping・Truncation・組合せ、FDRの各Grouping方針、DP分割の逐次FDRから一つだけ
+  オプションを変えたもの（追加4ビット、ハッシュ検証、一括8、一括8＋SIMD）、全部の組合せです。
+- `comparison`：追加ビット数・一括処理長・検証方法・利用可能なバックエンドの全組合せです。
+
+いずれも参照実装との一致を、FDRは候補列の一致も確認してから、3回のウォームアップ後に9回計測し
+中央値を求めます。各一致は`black_box`に渡して数えるだけで、構築・統計収集・正解照合は
+計測に含めません。`report.py`は`bench.py`の出力から表（`results.md`）と技法ごとの
+スループットのグラフ（SVG）を作ります。依存するmatplotlibはスクリプト内のメタデータで指定しており、
+`uv run`が用意します。`experiments/results/`は計測環境に依存するため、リポジトリに含めません。
 `partition.py`はGrouping方針ごとの結果と、パターン数に対する構築時間を調べます。
 
-設定は `experiments/` にあります。100パターン、8バケット、指定フィルタ長8、DP分割での候補数は
-次のとおりです。
+設定は `experiments/` にあります。8バケット、指定フィルタ長8、DP分割での候補数は
+次のとおりです（Sherlock以外は100パターン）。
 
 | 設定 | 入力分布・パターン長 | 追加0ビット | 4ビット | 8ビット |
 |---|---|---:|---:|---:|
 | `bytes-8-32.json` | 全256バイト・8〜32 | 2 | 2 | 2 |
 | `abcd-2-32.json` | a〜d・2〜32 | 207,342 | 103,969 | 103,969 |
 | `abcdqrst-2-6.json` | a〜d・q〜t・2〜6 | 229,797 | 57,358 | 30,528 |
+
+| `sherlock-100-4-16.json` | Sherlockの全文・4〜13（100語） | 15,867 | 1,631 | 1,607 |
+| `sherlock-1000-2-16.json` | Sherlockの全文・2〜15（1,000語） | 436,517 | 99,639 | 79,164 |
+
+Sherlockの設定は単語長の範囲を4〜16、2〜16と指定していますが、選ばれた単語の最長がそれぞれ13、15です。
+一致数は780件と35,141件です。
 
 `abcdqrst-2-6.json`は下位4ビットが同じ文字（aとqなど）を含むため、8ビットでさらに候補が減ります。
 候補が減っても表の構築・参照コストが増えるため、追加ビット数や一括処理長を増やしても
@@ -247,6 +283,6 @@ ruff check experiments
 - `hashbrown`：ハッシュ検証の表。
 - `clap`：CLIの引数定義。
 - `anyhow`、`thiserror`：エラー処理。
-- `rand`、`rand_chacha`：固定seedの乱数生成。
+- `rand`、`rand_chacha`：固定seedの乱数生成と単語の抽出。
 - `serde`、`serde_json`：JSON入出力。
 - `tempfile`（テスト用）：一時ディレクトリ。
