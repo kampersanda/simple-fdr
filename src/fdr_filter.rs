@@ -38,12 +38,38 @@ impl std::str::FromStr for BatchSize {
     }
 }
 
+/// Low bits of the next byte included in each mask lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuperCharacterBits {
+    Zero = 0,
+    Four = 4,
+    Eight = 8,
+}
+impl SuperCharacterBits {
+    pub fn get(self) -> usize {
+        self as usize
+    }
+}
+impl std::str::FromStr for SuperCharacterBits {
+    type Err = &'static str;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "0" => Ok(Self::Zero),
+            "4" => Ok(Self::Four),
+            "8" => Ok(Self::Eight),
+            _ => Err("super character bits must be 0, 4 or 8"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct FdrFilter {
     patterns: Patterns,
     buckets: Vec<Vec<usize>>,
     effective_lengths: Vec<usize>,
     masks: Vec<Vec<u64>>,
+    super_masks: Vec<Vec<u64>>,
+    super_character_bits: SuperCharacterBits,
     initial: Vec<u64>,
     width: usize,
     batch_size: BatchSize,
@@ -95,9 +121,63 @@ impl FdrFilter {
             buckets,
             effective_lengths,
             masks,
+            super_masks: Vec::new(),
+            super_character_bits: SuperCharacterBits::Zero,
             initial,
             width,
             batch_size: BatchSize::One,
+        }
+    }
+    /// Build correlated byte-pair masks, retaining byte masks for end of input.
+    /// The final pattern byte accepts every possible next-byte value.
+    pub fn with_super_character(mut self, bits: SuperCharacterBits) -> Self {
+        self.super_character_bits = bits;
+        self.super_masks.clear();
+        if bits == SuperCharacterBits::Zero || self.buckets.is_empty() {
+            return self;
+        }
+        let variants = 1usize << bits.get();
+        self.super_masks = vec![vec![0; self.initial.len()]; 256 * variants];
+        let q = self.buckets.len();
+        for (b, bucket) in self.buckets.iter().enumerate() {
+            for d in 0..self.effective_lengths[b] {
+                let bit = d * q + b;
+                let flag = 1u64 << (bit % 64);
+                for mask in &mut self.super_masks {
+                    mask[bit / 64] |= flag;
+                }
+                for &id in bucket {
+                    let pattern = &self.patterns.as_slice()[id];
+                    let position = pattern.len() - 1 - d;
+                    let base = (pattern[position] as usize) << bits.get();
+                    if d == 0 {
+                        for next in 0..variants {
+                            self.super_masks[base | next][bit / 64] &= !flag;
+                        }
+                    } else {
+                        let next = pattern[position + 1] as usize & (variants - 1);
+                        self.super_masks[base | next][bit / 64] &= !flag;
+                    }
+                }
+            }
+        }
+        self
+    }
+    pub fn super_character_bits(&self) -> SuperCharacterBits {
+        self.super_character_bits
+    }
+    /// Without a next byte, use the byte-only mask, accepting any next byte.
+    pub fn super_character_mask(&self, byte: u8, next: Option<u8>) -> &[u64] {
+        if self.super_masks.is_empty() {
+            return self.mask(byte);
+        }
+        match next {
+            Some(next) => {
+                let bits = self.super_character_bits.get();
+                let index = ((byte as usize) << bits) | (next as usize & ((1 << bits) - 1));
+                &self.super_masks[index]
+            }
+            None => self.mask(byte),
         }
     }
     /// Select batching without rebuilding the buckets or byte masks.
@@ -122,7 +202,7 @@ impl FdrFilter {
     }
     /// Mask payload only; excludes Vec headers, allocator overhead and patterns.
     pub fn mask_table_bytes(&self) -> usize {
-        256 * self.initial.len() * 8
+        (self.masks.len() + self.super_masks.len()) * self.initial.len() * 8
     }
     /// Sequential initial state; batching extends it with zero padding.
     pub fn initial_state(&self) -> &[u64] {
@@ -143,7 +223,10 @@ impl FdrFilter {
         }
         let mut state = self.initial.clone();
         for (index, &byte) in input.iter().enumerate() {
-            for (word, &mask) in state.iter_mut().zip(&self.masks[byte as usize]) {
+            for (word, &mask) in state
+                .iter_mut()
+                .zip(self.super_character_mask(byte, input.get(index + 1).copied()))
+            {
                 *word |= mask;
             }
             for b in 0..q {
@@ -185,7 +268,8 @@ impl FdrFilter {
                     let bits = shift % 64;
                     if destination >= words {
                         let source = destination - words;
-                        let mask = &self.masks[byte as usize];
+                        let index = block * self.batch_size.get() + offset;
+                        let mask = self.super_character_mask(byte, input.get(index + 1).copied());
                         combined |= mask.get(source).copied().unwrap_or(0) << bits;
                         if bits != 0 && source > 0 {
                             combined |= mask.get(source - 1).copied().unwrap_or(0) >> (64 - bits);

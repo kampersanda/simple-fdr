@@ -1,0 +1,12 @@
+{
+  "seed": 67,
+  "input_len": 65539,
+  "pattern_count": 100,
+  "min_pattern_len": 2,
+  "max_pattern_len": 6,
+  "alphabet": [97, 98, 99, 100, 113, 114, 115, 116],
+  "insertions": [
+    { "pattern_id": 0, "start": 0 },
+    { "pattern_id": 99, "start": 65533 }
+  ]
+}

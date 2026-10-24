@@ -441,3 +441,51 @@ fn batched_fdr_records_sizes_and_matches_sequential() {
         assert!(!path.exists());
     }
 }
+
+#[test]
+fn super_character_records_bits_table_size_and_reference_matches() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("experiments/stage0.json");
+    let data = generate(&serde_json::from_slice(&fs::read(&config).unwrap()).unwrap()).unwrap();
+    let expected = Naive::new(Patterns::new(data.patterns).unwrap()).find_all(&data.input);
+    for algorithm in ["fdr-sequential", "fdr-batched"] {
+        for bits in ["0", "4", "8", "1", "9"] {
+            let path = directory.path().join(format!("{algorithm}-{bits}.json"));
+            let output = Command::new(env!("CARGO_BIN_EXE_simple-fdr"))
+                .arg("run")
+                .arg(&config)
+                .arg(&path)
+                .args([
+                    "--algorithm",
+                    algorithm,
+                    "--super-character-bits",
+                    bits,
+                    "--bucket-count",
+                    "2",
+                    "--filter-length",
+                    "8",
+                ])
+                .output()
+                .unwrap();
+            if bits == "1" || bits == "9" {
+                assert_eq!(output.status.code(), Some(2));
+                assert!(!path.exists());
+                continue;
+            }
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let result: serde_json::Value =
+                serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+            let bits: usize = bits.parse().unwrap();
+            assert_eq!(result["fdr_filter"]["super_character_bits"], bits);
+            assert_eq!(result["matches"], serde_json::to_value(&expected).unwrap());
+            assert_eq!(
+                result["fdr_filter"]["mask_table_bytes"],
+                (256 + if bits == 0 { 0 } else { 256 << bits }) * 8
+            );
+        }
+    }
+}

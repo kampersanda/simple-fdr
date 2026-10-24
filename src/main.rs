@@ -11,7 +11,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use simple_fdr::{
     Match, Patterns,
-    fdr_filter::{BatchSize, FdrFilter},
+    fdr_filter::{BatchSize, FdrFilter, SuperCharacterBits},
     filter::{Filter, SearchStats},
     generate::{self, Config, Dataset},
     grouping::{Coefficients, Strategy},
@@ -45,6 +45,9 @@ enum Command {
         /// Input bytes per FDR batch (1, 2, 4 or 8); sequential always uses 1.
         #[arg(long, default_value = "8")]
         batch_size: BatchSize,
+        /// Low bits of the next byte included in FDR masks (0, 4 or 8).
+        #[arg(long, default_value = "0")]
+        super_character_bits: SuperCharacterBits,
         /// Bucket partition for the FDR filter.
         #[arg(long, value_enum, default_value_t = GroupingStrategy::DynamicProgramming)]
         grouping_strategy: GroupingStrategy,
@@ -131,6 +134,7 @@ struct FilterResult {
 
 #[derive(Serialize)]
 struct FdrFilterResult {
+    super_character_bits: usize,
     batch_size: usize,
     requested_bucket_count: usize,
     filter_length: usize,
@@ -153,6 +157,7 @@ fn main() -> Result<()> {
             filter_length,
             grouping_strategy,
             batch_size,
+            super_character_bits,
             alpha,
             beta,
         } => {
@@ -224,12 +229,14 @@ fn main() -> Result<()> {
                         strategy,
                         coefficients,
                     )
-                    .with_batch_size(batch_size);
+                    .with_batch_size(batch_size)
+                    .with_super_character(super_character_bits);
                     let construction_ns = started.elapsed().as_nanos();
                     let search = Instant::now();
                     let matches = matcher.find_all(&dataset.input);
                     let search_ns = search.elapsed().as_nanos();
                     fdr_filter_result = Some(FdrFilterResult {
+                        super_character_bits: super_character_bits.get(),
                         batch_size: batch_size.get(),
                         requested_bucket_count: bucket_count.get(),
                         filter_length: filter_length.get(),
