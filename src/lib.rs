@@ -5,6 +5,7 @@
 
 pub mod generate;
 pub mod naive;
+pub mod shift_or;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
