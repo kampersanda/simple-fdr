@@ -381,3 +381,63 @@ fn fdr_sequential_saves_partitions_lengths_coefficients_and_matches() {
         assert!(!result.exists());
     }
 }
+
+#[test]
+fn batched_fdr_records_sizes_and_matches_sequential() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("experiments/stage0.json");
+    let run = |algorithm: &str, size: &str| {
+        let path = directory.path().join(format!("{algorithm}-{size}.json"));
+        let output = Command::new(env!("CARGO_BIN_EXE_simple-fdr"))
+            .arg("run")
+            .arg(&config)
+            .arg(&path)
+            .args([
+                "--algorithm",
+                algorithm,
+                "--batch-size",
+                size,
+                "--bucket-count",
+                "8",
+                "--filter-length",
+                "8",
+            ])
+            .output()
+            .unwrap();
+        (output, path)
+    };
+    let (output, path) = run("fdr-sequential", "8");
+    assert!(output.status.success());
+    let reference: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    assert_eq!(reference["fdr_filter"]["batch_size"], 1);
+    for size in ["1", "2", "4", "8"] {
+        let (output, path) = run("fdr-batched", size);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(result["algorithm"], "fdr-batched");
+        assert_eq!(
+            result["fdr_filter"]["batch_size"],
+            size.parse::<usize>().unwrap()
+        );
+        assert_eq!(result["matches"], reference["matches"]);
+        for key in [
+            "candidate_count",
+            "full_comparisons",
+            "false_positive_candidates",
+            "buckets",
+            "effective_lengths",
+            "mask_table_bytes",
+        ] {
+            assert_eq!(result["fdr_filter"][key], reference["fdr_filter"][key]);
+        }
+    }
+    for size in ["0", "3", "16"] {
+        let (output, path) = run("fdr-batched", size);
+        assert!(!output.status.success());
+        assert!(!path.exists());
+    }
+}

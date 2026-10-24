@@ -1,4 +1,4 @@
-//! Sequential B=1 form of the paper's reverse-position mask layout.
+//! Integer sequential and batched forms of the paper's reverse-position mask layout.
 //!
 //! Bit d*q+b constrains a candidate ending d bytes in the future in bucket b.
 //! Masks are zero in padding (d >= the bucket's common suffix length).
@@ -12,6 +12,32 @@ use crate::{
 };
 use std::num::NonZeroUsize;
 
+/// Number of input bytes combined before shifting the state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchSize {
+    One = 1,
+    Two = 2,
+    Four = 4,
+    Eight = 8,
+}
+impl BatchSize {
+    pub fn get(self) -> usize {
+        self as usize
+    }
+}
+impl std::str::FromStr for BatchSize {
+    type Err = &'static str;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "1" => Ok(Self::One),
+            "2" => Ok(Self::Two),
+            "4" => Ok(Self::Four),
+            "8" => Ok(Self::Eight),
+            _ => Err("batch size must be 1, 2, 4 or 8"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct FdrFilter {
     patterns: Patterns,
@@ -20,6 +46,7 @@ pub struct FdrFilter {
     masks: Vec<Vec<u64>>,
     initial: Vec<u64>,
     width: usize,
+    batch_size: BatchSize,
 }
 impl FdrFilter {
     pub fn new(
@@ -70,7 +97,16 @@ impl FdrFilter {
             masks,
             initial,
             width,
+            batch_size: BatchSize::One,
         }
+    }
+    /// Select batching without rebuilding the buckets or byte masks.
+    pub fn with_batch_size(mut self, batch_size: BatchSize) -> Self {
+        self.batch_size = batch_size;
+        self
+    }
+    pub fn batch_size(&self) -> BatchSize {
+        self.batch_size
     }
     pub fn buckets(&self) -> &[Vec<usize>] {
         &self.buckets
@@ -79,15 +115,16 @@ impl FdrFilter {
         &self.effective_lengths
     }
     pub fn state_width(&self) -> usize {
-        self.width
+        self.width + self.buckets.len() * (self.batch_size.get() - 1)
     }
     pub fn word_count(&self) -> usize {
-        self.initial.len()
+        self.state_width().div_ceil(64)
     }
     /// Mask payload only; excludes Vec headers, allocator overhead and patterns.
     pub fn mask_table_bytes(&self) -> usize {
-        256 * self.word_count() * 8
+        256 * self.initial.len() * 8
     }
+    /// Sequential initial state; batching extends it with zero padding.
     pub fn initial_state(&self) -> &[u64] {
         &self.initial
     }
@@ -96,6 +133,10 @@ impl FdrFilter {
     }
 
     pub fn scan_candidates(&self, input: &[u8], mut report: impl FnMut(Candidate)) {
+        if self.batch_size != BatchSize::One {
+            self.scan_batched(input, report);
+            return;
+        }
         let q = self.buckets.len();
         if q == 0 {
             return;
@@ -116,6 +157,58 @@ impl FdrFilter {
             // Ascending writes preserve source words during the right shift.
             let words = q / 64;
             let bits = q % 64;
+            for destination in 0..state.len() {
+                let source = destination + words;
+                let mut value = state.get(source).copied().unwrap_or(0) >> bits;
+                if bits != 0 {
+                    value |= state.get(source + 1).copied().unwrap_or(0) << (64 - bits);
+                }
+                state[destination] = value;
+            }
+        }
+    }
+    fn scan_batched(&self, input: &[u8], mut report: impl FnMut(Candidate)) {
+        let q = self.buckets.len();
+        if q == 0 {
+            return;
+        }
+        let mut state = self.initial.clone();
+        state.resize(self.word_count(), 0);
+        for (block, bytes) in input.chunks(self.batch_size.get()).enumerate() {
+            // A = R | M[c0] | (M[c1] << q) | ... . Each word is
+            // accumulated locally: there is no per-byte state shift dependency.
+            for (destination, word) in state.iter_mut().enumerate() {
+                let mut combined = *word;
+                for (offset, &byte) in bytes.iter().enumerate() {
+                    let shift = offset * q;
+                    let words = shift / 64;
+                    let bits = shift % 64;
+                    if destination >= words {
+                        let source = destination - words;
+                        let mask = &self.masks[byte as usize];
+                        combined |= mask.get(source).copied().unwrap_or(0) << bits;
+                        if bits != 0 && source > 0 {
+                            combined |= mask.get(source - 1).copied().unwrap_or(0) >> (64 - bits);
+                        }
+                    }
+                }
+                *word = combined;
+            }
+            // Row j retains the candidate ending at byte j of this block.
+            for offset in 0..bytes.len() {
+                for b in 0..q {
+                    let bit = offset * q + b;
+                    if state[bit / 64] & (1u64 << (bit % 64)) == 0 {
+                        report(Candidate {
+                            bucket_id: b,
+                            end: block * self.batch_size.get() + offset + 1,
+                        });
+                    }
+                }
+            }
+            let shift = bytes.len() * q;
+            let words = shift / 64;
+            let bits = shift % 64;
             for destination in 0..state.len() {
                 let source = destination + words;
                 let mut value = state.get(source).copied().unwrap_or(0) >> bits;

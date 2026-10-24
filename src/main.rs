@@ -11,7 +11,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use simple_fdr::{
     Match, Patterns,
-    fdr_filter::FdrFilter,
+    fdr_filter::{BatchSize, FdrFilter},
     filter::{Filter, SearchStats},
     generate::{self, Config, Dataset},
     grouping::{Coefficients, Strategy},
@@ -36,13 +36,16 @@ enum Command {
         files: Files,
         #[arg(long, value_enum, default_value_t = Algorithm::Naive)]
         algorithm: Algorithm,
-        /// Maximum number of buckets (grouping modes and fdr-sequential).
+        /// Maximum number of buckets (grouping and FDR modes).
         #[arg(long, default_value = "2")]
         bucket_count: NonZeroUsize,
-        /// Maximum suffix length (truncation modes and fdr-sequential).
+        /// Maximum suffix length (truncation and FDR modes).
         #[arg(long, default_value = "2")]
         filter_length: NonZeroUsize,
-        /// Bucket partition for the FDR sequential filter.
+        /// Input bytes per FDR batch (1, 2, 4 or 8); sequential always uses 1.
+        #[arg(long, default_value = "8")]
+        batch_size: BatchSize,
+        /// Bucket partition for the FDR filter.
         #[arg(long, value_enum, default_value_t = GroupingStrategy::DynamicProgramming)]
         grouping_strategy: GroupingStrategy,
         #[arg(long, default_value = "1.05")]
@@ -60,6 +63,7 @@ enum Algorithm {
     Truncation,
     GroupingTruncation,
     FdrSequential,
+    FdrBatched,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -127,6 +131,7 @@ struct FilterResult {
 
 #[derive(Serialize)]
 struct FdrFilterResult {
+    batch_size: usize,
     requested_bucket_count: usize,
     filter_length: usize,
     grouping_strategy: Strategy,
@@ -147,6 +152,7 @@ fn main() -> Result<()> {
             bucket_count,
             filter_length,
             grouping_strategy,
+            batch_size,
             alpha,
             beta,
         } => {
@@ -205,7 +211,11 @@ fn main() -> Result<()> {
                         Some(matcher.word_count()),
                     )
                 }
-                Algorithm::FdrSequential => {
+                Algorithm::FdrSequential | Algorithm::FdrBatched => {
+                    let batch_size = match algorithm {
+                        Algorithm::FdrSequential => BatchSize::One,
+                        _ => batch_size,
+                    };
                     let strategy = grouping_strategy.into();
                     let matcher = FdrFilter::new(
                         patterns,
@@ -213,12 +223,14 @@ fn main() -> Result<()> {
                         filter_length,
                         strategy,
                         coefficients,
-                    );
+                    )
+                    .with_batch_size(batch_size);
                     let construction_ns = started.elapsed().as_nanos();
                     let search = Instant::now();
                     let matches = matcher.find_all(&dataset.input);
                     let search_ns = search.elapsed().as_nanos();
                     fdr_filter_result = Some(FdrFilterResult {
+                        batch_size: batch_size.get(),
                         requested_bucket_count: bucket_count.get(),
                         filter_length: filter_length.get(),
                         grouping_strategy: strategy,
@@ -232,7 +244,10 @@ fn main() -> Result<()> {
                         construction_ns,
                         search_ns,
                         matches,
-                        "fdr-sequential",
+                        match algorithm {
+                            Algorithm::FdrSequential => "fdr-sequential",
+                            _ => "fdr-batched",
+                        },
                         Some(matcher.state_width()),
                         Some(matcher.word_count()),
                     )
