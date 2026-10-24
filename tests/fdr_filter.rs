@@ -300,6 +300,7 @@ fn statistics_count_events_separately_from_matches_and_skip_short_prefixes() {
     assert_eq!(
         filter.statistics(b"ad"),
         SearchStats {
+            hash_lookups: 0,
             candidate_count: 1,
             full_comparisons: 2,
             false_positive_candidates: 1,
@@ -316,6 +317,7 @@ fn statistics_count_events_separately_from_matches_and_skip_short_prefixes() {
     assert_eq!(
         duplicates.statistics(b"aa"),
         SearchStats {
+            hash_lookups: 0,
             candidate_count: 2,
             full_comparisons: 4,
             false_positive_candidates: 0,
@@ -331,6 +333,7 @@ fn statistics_count_events_separately_from_matches_and_skip_short_prefixes() {
     assert_eq!(
         truncated.statistics(b"cd"),
         SearchStats {
+            hash_lookups: 0,
             candidate_count: 1,
             full_comparisons: 0,
             false_positive_candidates: 1,

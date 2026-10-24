@@ -19,6 +19,7 @@ pub struct Candidate {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct SearchStats {
     pub candidate_count: usize,
+    pub hash_lookups: usize,
     pub full_comparisons: usize,
     pub false_positive_candidates: usize,
 }

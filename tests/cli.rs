@@ -489,3 +489,56 @@ fn super_character_records_bits_table_size_and_reference_matches() {
         }
     }
 }
+
+#[test]
+fn hash_verifier_records_method_payload_lookups_and_reference_matches() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("experiments/stage6.json");
+    let data = generate(&serde_json::from_slice(&fs::read(&config).unwrap()).unwrap()).unwrap();
+    let expected = Naive::new(Patterns::new(data.patterns).unwrap()).find_all(&data.input);
+    for algorithm in ["fdr-sequential", "fdr-batched"] {
+        for method in ["exhaustive", "hash", "invalid"] {
+            let path = directory.path().join(format!("{algorithm}-{method}.json"));
+            let output = Command::new(env!("CARGO_BIN_EXE_simple-fdr"))
+                .arg("run")
+                .arg(&config)
+                .arg(&path)
+                .args([
+                    "--algorithm",
+                    algorithm,
+                    "--verification",
+                    method,
+                    "--super-character-bits",
+                    "4",
+                    "--bucket-count",
+                    "8",
+                    "--filter-length",
+                    "8",
+                ])
+                .output()
+                .unwrap();
+            if method == "invalid" {
+                assert_eq!(output.status.code(), Some(2));
+                assert!(!path.exists());
+                continue;
+            }
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let result: serde_json::Value =
+                serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+            assert_eq!(result["matches"], serde_json::to_value(&expected).unwrap());
+            let saved = &result["fdr_filter"];
+            assert_eq!(saved["verification"], method);
+            if method == "hash" {
+                assert_eq!(saved["hash_lookups"], saved["candidate_count"]);
+                assert!(saved["verification_table_bytes"].as_u64().unwrap() > 0);
+            } else {
+                assert_eq!(saved["hash_lookups"], 0);
+                assert_eq!(saved["verification_table_bytes"], 0);
+            }
+        }
+    }
+}

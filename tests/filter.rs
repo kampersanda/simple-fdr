@@ -68,6 +68,7 @@ fn article_examples_reject_false_positives() {
     assert_eq!(
         truncation.statistics(b"acd"),
         SearchStats {
+            hash_lookups: 0,
             candidate_count: 1,
             full_comparisons: 0,
             false_positive_candidates: 1
@@ -82,6 +83,7 @@ fn article_examples_reject_false_positives() {
     assert_eq!(
         combined.statistics(b"cd"),
         SearchStats {
+            hash_lookups: 0,
             candidate_count: 1,
             full_comparisons: 1,
             false_positive_candidates: 1
@@ -118,6 +120,7 @@ fn candidate_events_are_deduplicated_and_not_match_counts() {
     assert_eq!(
         filter.statistics(b"aa"),
         SearchStats {
+            hash_lookups: 0,
             candidate_count: 2,
             full_comparisons: 4,
             false_positive_candidates: 0

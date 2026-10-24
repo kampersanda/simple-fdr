@@ -11,7 +11,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use simple_fdr::{
     Match, Patterns,
-    fdr_filter::{BatchSize, FdrFilter, SuperCharacterBits},
+    fdr_filter::{BatchSize, FdrFilter, SuperCharacterBits, Verification},
     filter::{Filter, SearchStats},
     generate::{self, Config, Dataset},
     grouping::{Coefficients, Strategy},
@@ -48,6 +48,9 @@ enum Command {
         /// Low bits of the next byte included in FDR masks (0, 4 or 8).
         #[arg(long, default_value = "0")]
         super_character_bits: SuperCharacterBits,
+        /// Candidate verifier for FDR modes (exhaustive or hash).
+        #[arg(long, default_value = "exhaustive")]
+        verification: Verification,
         /// Bucket partition for the FDR filter.
         #[arg(long, value_enum, default_value_t = GroupingStrategy::DynamicProgramming)]
         grouping_strategy: GroupingStrategy,
@@ -134,6 +137,8 @@ struct FilterResult {
 
 #[derive(Serialize)]
 struct FdrFilterResult {
+    verification: Verification,
+    verification_table_bytes: usize,
     super_character_bits: usize,
     batch_size: usize,
     requested_bucket_count: usize,
@@ -158,6 +163,7 @@ fn main() -> Result<()> {
             grouping_strategy,
             batch_size,
             super_character_bits,
+            verification,
             alpha,
             beta,
         } => {
@@ -230,12 +236,15 @@ fn main() -> Result<()> {
                         coefficients,
                     )
                     .with_batch_size(batch_size)
-                    .with_super_character(super_character_bits);
+                    .with_super_character(super_character_bits)
+                    .with_verification(verification);
                     let construction_ns = started.elapsed().as_nanos();
                     let search = Instant::now();
                     let matches = matcher.find_all(&dataset.input);
                     let search_ns = search.elapsed().as_nanos();
                     fdr_filter_result = Some(FdrFilterResult {
+                        verification: matcher.verification(),
+                        verification_table_bytes: matcher.verification_table_bytes(),
                         super_character_bits: super_character_bits.get(),
                         batch_size: batch_size.get(),
                         requested_bucket_count: bucket_count.get(),
