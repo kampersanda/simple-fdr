@@ -1,9 +1,9 @@
 //! Deterministic generated workloads, using ChaCha8 and rand's uniform sampling.
 
+pub use crate::errors::GenerateError;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 use crate::Match;
 
@@ -45,10 +45,6 @@ pub struct Dataset {
     /// Guaranteed occurrences, not an exhaustive list of matches.
     pub planted_matches: Vec<Match>,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-#[error("{0}")]
-pub struct GenerateError(String);
 
 pub fn generate(config: &Config) -> Result<Dataset, GenerateError> {
     if config.min_pattern_len == 0 || config.max_pattern_len < config.min_pattern_len {

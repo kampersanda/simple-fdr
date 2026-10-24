@@ -4,15 +4,9 @@
 //! j. A u64 therefore holds patterns of 1..=63 bytes, including the start bit.
 
 use crate::Match;
-use thiserror::Error;
+pub use crate::errors::InvalidPatternLength;
 
 pub const MAX_PATTERN_LEN: usize = u64::BITS as usize - 1;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-#[error("pattern length {length} is outside 1..={MAX_PATTERN_LEN}")]
-pub struct InvalidPatternLength {
-    pub length: usize,
-}
 
 /// A single pattern, whose matches have pattern ID 0.
 #[derive(Debug)]
