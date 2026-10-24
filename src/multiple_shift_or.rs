@@ -25,7 +25,15 @@ pub struct TraceStep {
 
 impl MultipleShiftOr {
     pub fn new(patterns: Patterns) -> Self {
-        let patterns = patterns.as_slice();
+        let classes = patterns
+            .as_slice()
+            .iter()
+            .map(|pattern| pattern.iter().map(|&byte| vec![byte]).collect())
+            .collect::<Vec<_>>();
+        Self::from_classes(&classes)
+    }
+
+    pub(crate) fn from_classes(patterns: &[Vec<Vec<u8>>]) -> Self {
         let count = patterns.len();
         let longest = patterns.iter().map(Vec::len).max().unwrap_or(0);
         let width = count * (longest + 1);
@@ -38,9 +46,11 @@ impl MultipleShiftOr {
         }
         let mut masks = vec![initial.clone(); 256];
         for (id, pattern) in patterns.iter().enumerate() {
-            for (position, &byte) in pattern.iter().enumerate() {
+            for (position, class) in pattern.iter().enumerate() {
                 let bit = (position + 1) * count + id;
-                masks[usize::from(byte)][bit / 64] &= !(1u64 << (bit % 64));
+                for &byte in class {
+                    masks[usize::from(byte)][bit / 64] &= !(1u64 << (bit % 64));
+                }
             }
         }
         Self {
@@ -67,7 +77,7 @@ impl MultipleShiftOr {
         self.lengths[pattern_id] * self.lengths.len() + pattern_id
     }
 
-    fn walk(&self, input: &[u8], mut observe: impl FnMut(usize, u8, &[u64])) {
+    pub(crate) fn walk(&self, input: &[u8], mut observe: impl FnMut(usize, u8, &[u64])) {
         let count = self.lengths.len();
         if count == 0 {
             return;

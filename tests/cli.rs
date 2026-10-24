@@ -180,3 +180,100 @@ fn multiple_shift_or_saves_width_and_reference_matches() {
         assert!(result["search_ns"].is_number());
     }
 }
+
+#[test]
+fn filter_algorithms_save_reference_matches_configuration_and_statistics() {
+    use simple_fdr::filter::Filter;
+    use std::num::NonZeroUsize;
+    let directory = tempfile::tempdir().unwrap();
+    for count in [0, 3, 65] {
+        let config_path = directory.path().join(format!("config-filter-{count}.json"));
+        fs::write(
+            &config_path,
+            serde_json::to_vec(&serde_json::json!({
+                "seed": 31, "input_len": 128, "pattern_count": count,
+                "min_pattern_len": 1, "max_pattern_len": 8, "alphabet": [0, 1, 2, 3]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let data =
+            generate(&serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap()).unwrap();
+        let patterns = Patterns::new(data.patterns).unwrap();
+        let expected = Naive::new(patterns.clone()).find_all(&data.input);
+        for (name, buckets, length) in [
+            ("grouping", 2, None),
+            ("truncation", count.max(1), NonZeroUsize::new(2)),
+            ("grouping-truncation", 2, NonZeroUsize::new(2)),
+        ] {
+            let result_path = directory.path().join(format!("{name}-{count}.json"));
+            let output = Command::new(env!("CARGO_BIN_EXE_simple-fdr"))
+                .arg("run")
+                .arg(&config_path)
+                .arg(&result_path)
+                .args([
+                    "--algorithm",
+                    name,
+                    "--bucket-count",
+                    "2",
+                    "--filter-length",
+                    "2",
+                ])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let result: serde_json::Value =
+                serde_json::from_slice(&fs::read(result_path).unwrap()).unwrap();
+            let filter = Filter::new(
+                patterns.clone(),
+                NonZeroUsize::new(buckets).unwrap(),
+                length,
+            );
+            let stats = filter.statistics(&data.input);
+            assert_eq!(result["algorithm"], name);
+            assert_eq!(result["matches"], serde_json::to_value(&expected).unwrap());
+            assert_eq!(result["state_width_bits"], filter.state_width());
+            assert_eq!(result["state_words"], filter.word_count());
+            assert_eq!(result["filter"]["requested_bucket_count"], buckets);
+            assert_eq!(
+                result["filter"]["filter_length"],
+                serde_json::to_value(length).unwrap()
+            );
+            assert_eq!(
+                result["filter"]["buckets"],
+                serde_json::to_value(filter.buckets()).unwrap()
+            );
+            assert_eq!(
+                result["filter"]["accepting_lengths"],
+                serde_json::to_value(filter.accepting_lengths()).unwrap()
+            );
+            assert_eq!(result["filter"]["candidate_count"], stats.candidate_count);
+            assert_eq!(result["filter"]["full_comparisons"], stats.full_comparisons);
+            assert_eq!(
+                result["filter"]["false_positive_candidates"],
+                stats.false_positive_candidates
+            );
+        }
+    }
+}
+
+#[test]
+fn zero_filter_parameters_fail_before_creating_output() {
+    let directory = tempfile::tempdir().unwrap();
+    for flag in ["--bucket-count", "--filter-length"] {
+        let result = directory.path().join("result.json");
+        let output = Command::new(env!("CARGO_BIN_EXE_simple-fdr"))
+            .arg("run")
+            .arg("unused")
+            .arg(&result)
+            .args(["--algorithm", "grouping-truncation", flag, "0"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(!result.exists());
+    }
+}

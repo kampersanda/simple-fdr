@@ -4,6 +4,7 @@
 //! match ranges are half-open: `input[start..end]`.
 
 pub mod errors;
+pub mod filter;
 pub mod generate;
 pub mod multiple_shift_or;
 pub mod naive;

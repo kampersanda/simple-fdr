@@ -1,6 +1,7 @@
 use std::{
     env, fs,
     io::Write,
+    num::NonZeroUsize,
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -10,6 +11,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use simple_fdr::{
     Match, Patterns,
+    filter::{Filter, SearchStats},
     generate::{self, Config, Dataset},
     multiple_shift_or::MultipleShiftOr,
     naive::Naive,
@@ -32,6 +34,12 @@ enum Command {
         files: Files,
         #[arg(long, value_enum, default_value_t = Algorithm::Naive)]
         algorithm: Algorithm,
+        /// Maximum number of balanced consecutive-ID buckets (grouping modes).
+        #[arg(long, default_value = "2")]
+        bucket_count: NonZeroUsize,
+        /// Maximum per-pattern suffix length (truncation modes).
+        #[arg(long, default_value = "2")]
+        filter_length: NonZeroUsize,
     },
 }
 
@@ -39,6 +47,9 @@ enum Command {
 enum Algorithm {
     Naive,
     MultipleShiftOr,
+    Grouping,
+    Truncation,
+    GroupingTruncation,
 }
 
 #[derive(Args)]
@@ -62,6 +73,8 @@ struct ResultFile<'a> {
     state_width_bits: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     state_words: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    filter: Option<FilterResult>,
     max_pattern_len: usize,
     config: &'a Config,
     input_len: usize,
@@ -73,16 +86,32 @@ struct ResultFile<'a> {
     planted_matches: Vec<Match>,
 }
 
+#[derive(Serialize)]
+struct FilterResult {
+    requested_bucket_count: usize,
+    filter_length: Option<usize>,
+    buckets: Vec<Vec<usize>>,
+    accepting_lengths: Vec<Vec<usize>>,
+    #[serde(flatten)]
+    statistics: SearchStats,
+}
+
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Generate(files) => write_json(&files.output, &load_dataset(&files.config)?),
-        Command::Run { files, algorithm } => {
+        Command::Run {
+            files,
+            algorithm,
+            bucket_count,
+            filter_length,
+        } => {
             let dataset = load_dataset(&files.config)?;
             // Generation and output serialization are excluded. This single sample
             // includes collecting matches; it is not a benchmark with repetitions.
             let started = Instant::now();
             let patterns = Patterns::new(dataset.patterns)?;
             let max_pattern_len = patterns.as_slice().iter().map(Vec::len).max().unwrap_or(0);
+            let mut filter_result = None;
             let (construction_ns, search_ns, mut matches, name, width, words) = match algorithm {
                 Algorithm::Naive => {
                     let matcher = Naive::new(patterns);
@@ -96,6 +125,37 @@ fn main() -> Result<()> {
                         "naive",
                         None,
                         None,
+                    )
+                }
+                Algorithm::Grouping | Algorithm::Truncation | Algorithm::GroupingTruncation => {
+                    let (name, buckets, length) = match algorithm {
+                        Algorithm::Grouping => ("grouping", bucket_count, None),
+                        Algorithm::Truncation => (
+                            "truncation",
+                            NonZeroUsize::new(patterns.as_slice().len().max(1)).unwrap(),
+                            Some(filter_length),
+                        ),
+                        _ => ("grouping-truncation", bucket_count, Some(filter_length)),
+                    };
+                    let matcher = Filter::new(patterns, buckets, length);
+                    let construction_ns = started.elapsed().as_nanos();
+                    let search = Instant::now();
+                    let matches = matcher.find_all(&dataset.input);
+                    let search_ns = search.elapsed().as_nanos();
+                    filter_result = Some(FilterResult {
+                        requested_bucket_count: buckets.get(),
+                        filter_length: length.map(NonZeroUsize::get),
+                        buckets: matcher.buckets().to_vec(),
+                        accepting_lengths: matcher.accepting_lengths().to_vec(),
+                        statistics: matcher.statistics(&dataset.input),
+                    });
+                    (
+                        construction_ns,
+                        search_ns,
+                        matches,
+                        name,
+                        Some(matcher.state_width()),
+                        Some(matcher.word_count()),
                     )
                 }
                 Algorithm::MultipleShiftOr => {
@@ -125,6 +185,7 @@ fn main() -> Result<()> {
                 algorithm: name,
                 state_width_bits: width,
                 state_words: words,
+                filter: filter_result,
                 max_pattern_len,
                 config: &dataset.config,
                 input_len: dataset.input.len(),
