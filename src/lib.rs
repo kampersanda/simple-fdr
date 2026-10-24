@@ -6,9 +6,8 @@
 pub mod generate;
 pub mod naive;
 
-use std::fmt;
-
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 /// Patterns in ID order. Identical byte strings retain separate IDs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,18 +26,11 @@ impl Patterns {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("pattern {pattern_id} is empty")]
 pub struct EmptyPattern {
     pub pattern_id: usize,
 }
-
-impl fmt::Display for EmptyPattern {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "pattern {} is empty", self.pattern_id)
-    }
-}
-
-impl std::error::Error for EmptyPattern {}
 
 /// One occurrence, including its pattern ID and half-open byte range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

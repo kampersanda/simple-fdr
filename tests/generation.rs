@@ -26,15 +26,15 @@ fn config() -> Config {
 }
 
 #[test]
-fn generator_v1_is_reproducible_and_has_a_stable_fixture() {
+fn generator_v2_is_reproducible_and_has_a_stable_fixture() {
     let config = config();
     let first = generate(&config).unwrap();
     assert_eq!(first, generate(&config).unwrap());
-    assert_eq!(first.generator_version, 1);
-    assert_eq!(first.patterns, vec![vec![127, 0, 0], vec![0, 127, 255]]);
+    assert_eq!(first.generator_version, 2);
+    assert_eq!(first.patterns, vec![vec![255, 127, 127, 0], vec![0, 255]]);
     assert_eq!(
         first.input,
-        vec![127, 0, 0, 127, 255, 127, 255, 255, 0, 127, 255, 0]
+        vec![255, 127, 127, 0, 255, 127, 255, 0, 0, 255, 127, 0]
     );
     assert_eq!(
         first.planted_matches,
@@ -42,12 +42,12 @@ fn generator_v1_is_reproducible_and_has_a_stable_fixture() {
             Match {
                 pattern_id: 0,
                 start: 0,
-                end: 3
+                end: 4
             },
             Match {
                 pattern_id: 1,
                 start: 8,
-                end: 11
+                end: 10
             },
         ]
     );

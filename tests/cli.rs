@@ -21,11 +21,10 @@ fn cli(command: &str, config: &Path, output: &Path) -> Output {
 
 #[test]
 fn saves_reproducible_data_and_complete_experiment_results() {
-    let directory = std::env::temp_dir().join(format!("simple-fdr-cli-{}", std::process::id()));
-    fs::create_dir(&directory).unwrap();
+    let directory = tempfile::tempdir().unwrap();
     let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("experiments/stage0.json");
-    let dataset_path = directory.join("dataset.json");
-    let result_path = directory.join("result.json");
+    let dataset_path = directory.path().join("dataset.json");
+    let result_path = directory.path().join("result.json");
 
     let output = cli("generate", &config, &dataset_path);
     assert!(
@@ -46,7 +45,7 @@ fn saves_reproducible_data_and_complete_experiment_results() {
         serde_json::from_slice(&fs::read(&result_path).unwrap()).unwrap();
     let expected = Naive::new(Patterns::new(data.patterns).unwrap()).find_all(&data.input);
     assert_eq!(result["format_version"], 1);
-    assert_eq!(result["generator_version"], 1);
+    assert_eq!(result["generator_version"], 2);
     assert_eq!(result["algorithm"], "naive");
     assert_eq!(
         result["config"],
@@ -64,15 +63,13 @@ fn saves_reproducible_data_and_complete_experiment_results() {
     let before = fs::read(&result_path).unwrap();
     assert!(!cli("run", &config, &result_path).status.success());
     assert_eq!(before, fs::read(&result_path).unwrap());
-    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
 fn invalid_config_fails_without_creating_a_result() {
-    let directory = std::env::temp_dir().join(format!("simple-fdr-invalid-{}", std::process::id()));
-    fs::create_dir(&directory).unwrap();
-    let config = directory.join("config.json");
-    let result = directory.join("result.json");
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.json");
+    let result = directory.path().join("result.json");
     fs::write(
         &config,
         r#"{
@@ -83,22 +80,56 @@ fn invalid_config_fails_without_creating_a_result() {
     .unwrap();
     assert!(!cli("run", &config, &result).status.success());
     assert!(!result.exists());
-    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
 fn help_succeeds_and_unknown_commands_fail() {
-    assert!(
-        Command::new(env!("CARGO_BIN_EXE_simple-fdr"))
-            .arg("--help")
+    for args in [
+        vec!["--help"],
+        vec!["--version"],
+        vec!["generate", "--help"],
+        vec!["run", "--help"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_simple-fdr"))
+            .args(args)
             .output()
-            .unwrap()
-            .status
-            .success()
-    );
+            .unwrap();
+        assert!(output.status.success());
+        assert!(!output.stdout.is_empty());
+    }
     assert!(
         !cli("unknown", Path::new("unused"), Path::new("unused"))
             .status
             .success()
     );
+}
+
+#[test]
+fn missing_or_extra_arguments_fail_before_reading_config() {
+    for args in [
+        vec![],
+        vec!["generate"],
+        vec!["run", "unused"],
+        vec!["run", "unused", "unused", "extra"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_simple-fdr"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Usage:"));
+    }
+}
+
+#[test]
+fn file_errors_name_the_config_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("missing.json");
+    let result = directory.path().join("result.json");
+    let output = cli("run", &config, &result);
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("failed to read config"));
+    assert!(error.contains(config.to_str().unwrap()));
+    assert!(!result.exists());
 }

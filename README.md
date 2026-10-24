@@ -20,6 +20,8 @@ Rustのedition 2024に対応したツールチェーンを使用します。
 
 ```sh
 cargo test --locked
+cargo run --locked -- --help
+cargo run --locked -- generate --help
 cargo run --locked --example reference
 cargo run --locked --release -- generate experiments/stage0.json /tmp/fdr-dataset.json
 cargo run --locked --release -- run experiments/stage0.json /tmp/fdr-result.json
@@ -59,8 +61,10 @@ assert_eq!(matches.len(), 5);
 添字は一様に選びます。同じバイトを複数回登録すれば、出現頻度に重みを付けられます。
 パターン内容の重複は許容します。
 
-生成器のversion 1ではSplitMix64と棄却法を使い、パターン、入力の順で生成した後に
-一致を埋め込みます。同じversionと設定なら同じバイト列になります。
+生成器のversion 2では`rand_chacha`のChaCha8と`rand`の一様サンプリングを使い、
+パターン、入力の順で生成した後に一致を埋め込みます。同じversionと設定なら同じ
+バイト列になります。再現時は、対応するソースと`Cargo.lock`を使用してください。
+旧version 1（SplitMix64）とは生成結果が異なります。
 埋め込みは隣接可能ですが、重なり、存在しないID、入力範囲外の指定はエラーになります。
 
 `generate`の出力には、生成器のversion、設定、パターン、入力、埋め込んだ一致を保存します。
@@ -78,6 +82,15 @@ assert_eq!(matches.len(), 5);
 作成にかかる時間です。ウォームアップ・反復計測やCPUの詳細記録は今後追加します。
 
 FDRのフィルタ、Shift-OR、SIMD、実ファイルを読み込むCLIは後続の段階で実装します。
+
+## 使用するライブラリ
+
+- `clap`：引数とサブコマンドの定義、ヘルプ、バージョン表示。
+- `anyhow`：CLIのエラー伝播と、失敗したファイルパスの表示。
+- `thiserror`：ライブラリのエラー型の定義。
+- `rand`と`rand_chacha`：固定seedの乱数生成と一様サンプリング。
+- `serde`と`serde_json`：設定・データ・結果のJSON入出力。
+- `tempfile`（テスト用）：一時ディレクトリの作成と自動削除。
 
 ## 検証
 

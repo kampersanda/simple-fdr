@@ -1,8 +1,9 @@
-//! Deterministic generated workloads, using SplitMix64 and rejection sampling.
+//! Deterministic generated workloads, using ChaCha8 and rand's uniform sampling.
 
-use std::fmt;
-
+use rand::{Rng, SeedableRng};
+use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::Match;
 
@@ -14,7 +15,7 @@ pub struct Insertion {
     pub start: usize,
 }
 
-/// Version 1 generates patterns first, input second, then applies insertions.
+/// Version 2 generates patterns first, input second, then applies insertions.
 /// Lengths are sampled uniformly from the inclusive range. Bytes are sampled
 /// uniformly from alphabet entries (repeated entries therefore act as weights).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,16 +46,9 @@ pub struct Dataset {
     pub planted_matches: Vec<Match>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("{0}")]
 pub struct GenerateError(String);
-
-impl fmt::Display for GenerateError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for GenerateError {}
 
 pub fn generate(config: &Config) -> Result<Dataset, GenerateError> {
     if config.min_pattern_len == 0 || config.max_pattern_len < config.min_pattern_len {
@@ -66,11 +60,12 @@ pub fn generate(config: &Config) -> Result<Dataset, GenerateError> {
         return Err(GenerateError("alphabet must not be empty".into()));
     }
 
-    let mut rng = SplitMix64(config.seed);
+    let mut rng = ChaCha8Rng::seed_from_u64(config.seed);
     let mut patterns = Vec::with_capacity(config.pattern_count);
     for _ in 0..config.pattern_count {
-        let len =
-            config.min_pattern_len + rng.below(config.max_pattern_len - config.min_pattern_len + 1);
+        // Use u64 ranges so sampling does not depend on the platform's usize width.
+        let len = rng.random_range(config.min_pattern_len as u64..=config.max_pattern_len as u64)
+            as usize;
         patterns.push(random_bytes(&mut rng, len, &config.alphabet));
     }
 
@@ -109,7 +104,7 @@ pub fn generate(config: &Config) -> Result<Dataset, GenerateError> {
         input[m.start..m.end].copy_from_slice(&patterns[m.pattern_id]);
     }
     Ok(Dataset {
-        generator_version: 1,
+        generator_version: 2,
         config: config.clone(),
         patterns,
         input,
@@ -117,31 +112,8 @@ pub fn generate(config: &Config) -> Result<Dataset, GenerateError> {
     })
 }
 
-fn random_bytes(rng: &mut SplitMix64, len: usize, alphabet: &[u8]) -> Vec<u8> {
+fn random_bytes(rng: &mut ChaCha8Rng, len: usize, alphabet: &[u8]) -> Vec<u8> {
     (0..len)
-        .map(|_| alphabet[rng.below(alphabet.len())])
+        .map(|_| alphabet[rng.random_range(0..alphabet.len() as u64) as usize])
         .collect()
-}
-
-struct SplitMix64(u64);
-
-impl SplitMix64 {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9e3779b97f4a7c15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
-        z ^ (z >> 31)
-    }
-
-    fn below(&mut self, bound: usize) -> usize {
-        let bound = bound as u64;
-        let threshold = bound.wrapping_neg() % bound;
-        loop {
-            let value = self.next();
-            if value >= threshold {
-                return (value % bound) as usize;
-            }
-        }
-    }
 }
