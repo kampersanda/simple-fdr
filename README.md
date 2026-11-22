@@ -1,11 +1,11 @@
 # simple-fdr
 
-技術同人誌『[甲乙丙技術部 Vol. 1](https://techbookfest.org/product/paqm1HiaKWmenVnAF8cNsQ?productVariantID=nshcjr9SsRS6T36TKBeFPh)』の
-「第４章　複数パターン検索の高速化テクをFDR から学ぼう」の付録コードです。
-
 FDRによる複数パターン検索を、Rustで実験用に実装しています。
 Shift-ORから始めて、Grouping・Truncation、複数バイトの一括処理、Super Character、
 ハッシュ検証、NEON／SSE2によるマスク累積までを段階的に実装しています。
+
+技術同人誌『[甲乙丙技術部 Vol. 1](https://techbookfest.org/product/paqm1HiaKWmenVnAF8cNsQ?productVariantID=nshcjr9SsRS6T36TKBeFPh)』の
+「第４章　複数パターン検索の高速化テクをFDR から学ぼう」の付録コードです。
 
 ## 使い方
 
