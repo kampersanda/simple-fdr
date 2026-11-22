@@ -86,14 +86,3 @@ uv run experiments/report.py experiments/results/bench.json experiments/results
 `bench.py`はSherlockの単語を使う設定と、Super Characterの効果を見る`abcdqrst-2-6.json`を計測し、
 `report.py`が表（`results.md`）とスループットのグラフ（SVG）を作ります。
 Grouping方針の比較は `experiments/partition.py` で行えます。
-
-## 開発
-
-```sh
-cargo fmt --check
-cargo test --locked
-cargo clippy --locked --all-targets -- -D warnings
-ruff check experiments
-```
-
-各検索器は参照実装と照合してテストしています。
